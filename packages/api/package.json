@@ -1,0 +1,29 @@
+{
+  "name": "@se-project/api",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "@orpc/client": "catalog:",
+    "@orpc/openapi": "catalog:",
+    "@orpc/server": "catalog:",
+    "@orpc/zod": "catalog:",
+    "@se-project/auth": "workspace:*",
+    "@se-project/db": "workspace:*",
+    "@se-project/env": "workspace:*",
+    "dotenv": "catalog:",
+    "next": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@se-project/config": "workspace:*",
+    "typescript": "^5"
+  }
+}

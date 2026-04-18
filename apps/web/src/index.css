@@ -1,0 +1,71 @@
+@import "@se-project/ui/globals.css";
+
+@keyframes float-y {
+	0%,
+	100% {
+		transform: translateY(0);
+	}
+	50% {
+		transform: translateY(-8px);
+	}
+}
+
+@keyframes fade-slide-up {
+	from {
+		opacity: 0;
+		transform: translateY(16px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes pulse-ring {
+	0% {
+		transform: scale(0.95);
+		opacity: 0.65;
+	}
+	70% {
+		transform: scale(1.12);
+		opacity: 0;
+	}
+	100% {
+		transform: scale(1.12);
+		opacity: 0;
+	}
+}
+
+@keyframes shimmer-x {
+	0% {
+		background-position: -200% 0;
+	}
+	100% {
+		background-position: 200% 0;
+	}
+}
+
+@layer utilities {
+	.animate-float-y {
+		animation: float-y 5s ease-in-out infinite;
+	}
+
+	.animate-fade-slide-up {
+		animation: fade-slide-up 500ms ease both;
+	}
+
+	.animate-pulse-ring {
+		animation: pulse-ring 1.8s ease-out infinite;
+	}
+
+	.animate-shimmer-x {
+		background-size: 200% 100%;
+		animation: shimmer-x 2.2s linear infinite;
+	}
+
+	.surface-glow {
+		background-image:
+			radial-gradient(circle at 20% 20%, color-mix(in oklab, var(--primary) 22%, transparent), transparent 35%),
+			radial-gradient(circle at 80% 0%, color-mix(in oklab, var(--secondary) 18%, transparent), transparent 40%);
+	}
+}

@@ -1,0 +1,57 @@
+{
+  "name": "se-project",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ],
+    "catalog": {
+      "dotenv": "^17.2.2",
+      "zod": "^4.1.13",
+      "lucide-react": "^0.546.0",
+      "next": "^16.2.0",
+      "next-themes": "^0.4.6",
+      "react": "^19.2.3",
+      "react-dom": "^19.2.3",
+      "sonner": "^2.0.5",
+      "@orpc/server": "^1.12.2",
+      "@orpc/client": "^1.12.2",
+      "@orpc/openapi": "^1.12.2",
+      "@orpc/zod": "^1.12.2",
+      "better-auth": "^1.5.5",
+      "@types/react": "^19.2.10",
+      "@types/react-dom": "^19.2.3",
+      "tailwindcss": "^4.1.18"
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '*' build",
+    "check-types": "bun run --filter '*' check-types",
+    "dev:web": "bun run --filter web dev",
+    "db:push": "bun run --filter @se-project/db db:push",
+    "db:studio": "bun run --filter @se-project/db db:studio",
+    "db:generate": "bun run --filter @se-project/db db:generate",
+    "db:migrate": "bun run --filter @se-project/db db:migrate",
+    "db:start": "bun run --filter @se-project/db db:start",
+    "db:watch": "bun run --filter @se-project/db db:watch",
+    "db:stop": "bun run --filter @se-project/db db:stop",
+    "db:down": "bun run --filter @se-project/db db:down"
+  },
+  "dependencies": {
+    "@se-project/env": "workspace:*",
+    "dotenv": "catalog:",
+    "exceljs": "^4.4.0",
+    "pdfkit": "^0.18.0",
+    "qrcode": "^1.5.4",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@se-project/config": "workspace:*",
+    "@types/node": "^22.13.14",
+    "typescript": "^5"
+  },
+  "packageManager": "bun@1.3.0"
+}

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1774175633624,
+      "tag": "0000_even_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1774178902135,
+      "tag": "0001_tidy_victor_mancha",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776497708249,
+      "tag": "0002_daily_gambit",
+      "breakpoints": true
+    }
+  ]
+}

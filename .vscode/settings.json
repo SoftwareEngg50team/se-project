@@ -1,0 +1,7 @@
+{
+  "css.customData": [
+    ".vscode/tailwindcss.json"
+  ],
+  "css.lint.unknownAtRules": "ignore",
+  "js/ts.tsdk.path": "node_modules/typescript/lib"
+}

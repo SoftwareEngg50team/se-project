@@ -1,0 +1,24 @@
+{
+  "name": "@se-project/auth",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "@se-project/db": "workspace:*",
+    "@se-project/env": "workspace:*",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@se-project/config": "workspace:*",
+    "typescript": "^5"
+  }
+}
