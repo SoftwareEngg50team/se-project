@@ -1,20 +1,47 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useForm } from "@tanstack/react-form";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Store, Phone, Mail, Tag } from "lucide-react";
+import { Mail, Pencil, Phone, Store, Tag } from "lucide-react";
+import { toast } from "sonner";
+import z from "zod";
+import { Button } from "@se-project/ui/components/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@se-project/ui/components/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@se-project/ui/components/dialog";
+import { Input } from "@se-project/ui/components/input";
+import { Label } from "@se-project/ui/components/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@se-project/ui/components/select";
 import { orpc } from "@/utils/orpc";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { DataTable } from "@/components/shared/data-table";
+
+const editVendorSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  phone: z.string(),
+  email: z.string(),
+  type: z.enum(["food", "transportation", "repair", "other"]),
+});
 
 function formatCurrency(paise: number): string {
   return `\u20B9${(paise / 100).toFixed(2)}`;
@@ -156,10 +183,56 @@ const paymentColumns: ColumnDef<PaymentRow, unknown>[] = [
 
 export function VendorDetailView({ paramsPromise }: VendorDetailViewProps) {
   const { id } = use(paramsPromise);
+  const [editOpen, setEditOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: vendorData, isLoading } = useQuery(
     orpc.vendors.getById.queryOptions({ input: { id } }),
   );
+
+  const updateVendor = useMutation(orpc.vendors.update.mutationOptions());
+
+  const editForm = useForm({
+    defaultValues: {
+      name: vendorData?.name ?? "",
+      phone: vendorData?.phone ?? "",
+      email: vendorData?.email ?? "",
+      type: (vendorData?.type ?? "other") as "food" | "transportation" | "repair" | "other",
+    },
+    onSubmit: async ({ value }) => {
+      if (!vendorData) {
+        return;
+      }
+
+      await updateVendor.mutateAsync(
+        {
+          id,
+          name: value.name,
+          phone: value.phone || undefined,
+          email: value.email || undefined,
+          type: value.type,
+        },
+        {
+          onSuccess: async () => {
+            await queryClient.invalidateQueries({
+              queryKey: orpc.vendors.getById.queryOptions({ input: { id } }).queryKey,
+            });
+            await queryClient.invalidateQueries({
+              queryKey: ["vendors", "list"],
+            });
+            setEditOpen(false);
+            toast.success("Vendor updated successfully");
+          },
+          onError: (error) => {
+            toast.error(error.message || "Failed to update vendor");
+          },
+        },
+      );
+    },
+    validators: {
+      onSubmit: editVendorSchema,
+    },
+  });
 
   if (isLoading) {
     return (
@@ -186,6 +259,10 @@ export function VendorDetailView({ paramsPromise }: VendorDetailViewProps) {
     <div className="space-y-8">
       <PageHeader title={vendorData.name}>
         <StatusBadge status={vendorData.type} />
+        <Button variant="outline" onClick={() => setEditOpen(true)}>
+          <Pencil className="mr-2 size-4" />
+          Edit Vendor
+        </Button>
       </PageHeader>
 
       <Card>
@@ -286,6 +363,113 @@ export function VendorDetailView({ paramsPromise }: VendorDetailViewProps) {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Vendor</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              editForm.handleSubmit();
+            }}
+            className="space-y-4"
+          >
+            <editForm.Field name="name">
+              {(field) => (
+                <div className="space-y-2">
+                  <Label htmlFor={field.name}>Name</Label>
+                  <Input
+                    id={field.name}
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                  />
+                  {field.state.meta.errors.map((error) => (
+                    <p key={error?.message} className="text-sm text-red-500">
+                      {error?.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </editForm.Field>
+
+            <editForm.Field name="type">
+              {(field) => (
+                <div className="space-y-2">
+                  <Label htmlFor={field.name}>Type</Label>
+                  <Select
+                    value={field.state.value}
+                    onValueChange={(value) => field.handleChange(value as "food" | "transportation" | "repair" | "other")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select type">
+                        {field.state.value ? { food: "Food", transportation: "Transportation", repair: "Repair", other: "Other" }[field.state.value] : undefined}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="food">Food</SelectItem>
+                      <SelectItem value="transportation">Transportation</SelectItem>
+                      <SelectItem value="repair">Repair</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </editForm.Field>
+
+            <editForm.Field name="phone">
+              {(field) => (
+                <div className="space-y-2">
+                  <Label htmlFor={field.name}>Phone</Label>
+                  <Input
+                    id={field.name}
+                    type="tel"
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                  />
+                </div>
+              )}
+            </editForm.Field>
+
+            <editForm.Field name="email">
+              {(field) => (
+                <div className="space-y-2">
+                  <Label htmlFor={field.name}>Email</Label>
+                  <Input
+                    id={field.name}
+                    type="email"
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                  />
+                </div>
+              )}
+            </editForm.Field>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                Cancel
+              </Button>
+              <editForm.Subscribe
+                selector={(state) => ({
+                  canSubmit: state.canSubmit,
+                  isSubmitting: state.isSubmitting,
+                })}
+              >
+                {({ canSubmit, isSubmitting }) => (
+                  <Button type="submit" disabled={!canSubmit || isSubmitting}>
+                    {isSubmitting ? "Saving..." : "Save Changes"}
+                  </Button>
+                )}
+              </editForm.Subscribe>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

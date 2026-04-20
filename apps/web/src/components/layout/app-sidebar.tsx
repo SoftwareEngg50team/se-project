@@ -13,6 +13,7 @@ import {
   Bell,
   UserRound,
   FileDown,
+  ClipboardList,
   Sparkles,
 } from "lucide-react";
 import {
@@ -96,6 +97,12 @@ const navItems = [
     label: "Assistant",
     href: "/assistant",
     icon: Sparkles,
+    roles: ["owner", "eventHead", "staff"],
+  },
+  {
+    label: "Requirements",
+    href: "/requirements",
+    icon: ClipboardList,
     roles: ["owner", "eventHead", "staff"],
   },
 ];
