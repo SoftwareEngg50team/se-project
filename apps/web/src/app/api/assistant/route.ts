@@ -10,6 +10,74 @@ type AssistantCommand = {
   data: Record<string, unknown>;
 };
 
+function parseAmount(text: string): number | undefined {
+  const match = text.match(/(\d+(?:\.\d+)?)/);
+  if (!match) return undefined;
+
+  const value = Number.parseFloat(match[1]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function parseDateToken(text: string): string | undefined {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("aaj") || normalized.includes("today")) return "today";
+  if (normalized.includes("kal") || normalized.includes("tomorrow")) return "tomorrow";
+  if (normalized.includes("parso") || normalized.includes("day after tomorrow")) return "day_after_tomorrow";
+  return undefined;
+}
+
+function parseRuleBasedCommand(input: string): AssistantCommand | null {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized.includes("invoice") || normalized.includes("bill")) {
+    const amount = parseAmount(normalized);
+    return {
+      action: "create_invoice",
+      data: {
+        amount,
+        dueDate: parseDateToken(normalized),
+      },
+    };
+  }
+
+  if (normalized.includes("payment") || normalized.includes("paid") || normalized.includes("record payment")) {
+    const amount = parseAmount(normalized);
+    return {
+      action: "record_payment",
+      data: {
+        amount,
+        paymentDate: parseDateToken(normalized),
+      },
+    };
+  }
+
+  if (normalized.includes("vendor") || normalized.includes("supplier")) {
+    const nameMatch = input.match(/(?:vendor|supplier)\s+(?:named\s+)?([a-zA-Z0-9\s&.-]+)/i);
+    return {
+      action: "add_vendor",
+      data: {
+        name: nameMatch?.[1]?.trim() || "Voice Created Vendor",
+      },
+    };
+  }
+
+  if (normalized.includes("event") || normalized.includes("function") || normalized.includes("program")) {
+    const locationMatch = input.match(/(?:in|at)\s+([a-zA-Z\s.-]+)/i);
+    return {
+      action: "create_event",
+      data: {
+        name: "Voice Created Event",
+        startDate: parseDateToken(normalized),
+        endDate: parseDateToken(normalized),
+        location: locationMatch?.[1]?.trim(),
+      },
+    };
+  }
+
+  return null;
+}
+
 function extractJson(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced?.[1]) return fenced[1].trim();
@@ -115,10 +183,28 @@ export async function POST(request: Request) {
       `User input: ${text}`,
     ].join("\n\n");
 
-    const { text: textResult, model } = await callGemini(prompt, apiKey);
-    const command = parseCommand(textResult);
+    let command: AssistantCommand | null = null;
+    let model: string | null = null;
+    let warning: string | undefined;
 
-    return NextResponse.json({ command, model });
+    try {
+      const geminiResult = await callGemini(prompt, apiKey);
+      command = parseCommand(geminiResult.text);
+      model = geminiResult.model;
+    } catch (geminiError) {
+      command = parseRuleBasedCommand(text);
+      model = "rule_based_fallback";
+      warning = geminiError instanceof Error ? geminiError.message : "Gemini unavailable, used fallback";
+    }
+
+    if (!command) {
+      return NextResponse.json(
+        { error: "Unable to understand command. Please provide a clearer instruction." },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({ command, model, warning });
   } catch (error) {
     return NextResponse.json(
       {
