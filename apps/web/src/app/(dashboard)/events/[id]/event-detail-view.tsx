@@ -108,6 +108,12 @@ type AvailableEquipment = {
   name: string;
   status: string;
   category: { name: string };
+  conflictingEvents?: Array<{
+    eventId: string;
+    eventName: string;
+    startDate: string | Date;
+    endDate: string | Date;
+  }>;
 };
 
 type AvailableStaff = {
@@ -176,7 +182,11 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
   const expensesQuery = useQuery(orpc.expenses.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
   const paymentsQuery = useQuery(orpc.payments.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
   const invoicesQuery = useQuery(orpc.invoices.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
-  const availableEquipmentQuery = useQuery(orpc.equipment.list.queryOptions({ input: { status: "available", page: 1, limit: 100 } }));
+  const availableEquipmentQuery = useQuery(
+    orpc.equipment.getAvailableByDateRange.queryOptions({
+      input: { eventId: id, page: 1, limit: 100 },
+    }),
+  );
   const staffListQuery = useQuery(orpc.staff.list.queryOptions({ input: { page: 1, limit: 100 } }));
   const vendorsQuery = useQuery(orpc.vendors.list.queryOptions({ input: { page: 1, limit: 100 } }));
 
@@ -197,7 +207,9 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
   const expenses = (expensesQuery.data?.expenses ?? []) as ExpenseRow[];
   const payments = (paymentsQuery.data?.payments ?? []) as PaymentRow[];
   const invoices = (invoicesQuery.data?.invoices ?? []) as InvoiceRow[];
-  const availableEquipment = ((availableEquipmentQuery.data?.items ?? []) as AvailableEquipment[]).filter((item) => item.status === "available");
+  const availableEquipment =
+    (availableEquipmentQuery.data?.items ?? []) as AvailableEquipment[];
+  const unavailableEquipmentCount = availableEquipmentQuery.data?.unavailableCount ?? 0;
   const availableStaff = (staffListQuery.data?.users ?? []) as AvailableStaff[];
   const vendors = vendorsQuery.data?.vendors ?? [];
 
@@ -233,7 +245,11 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
       await Promise.all(selectedEquipmentIds.map((equipmentId) => assignEquipment.mutateAsync({ eventId: id, equipmentId })));
       setSelectedEquipment({});
       await queryClient.invalidateQueries({ queryKey: orpc.equipmentAssignments.getByEvent.queryOptions({ input: { eventId: id } }).queryKey });
-      await queryClient.invalidateQueries({ queryKey: orpc.equipment.list.queryOptions({ input: { status: "available", page: 1, limit: 100 } }).queryKey });
+      await queryClient.invalidateQueries({
+        queryKey: orpc.equipment.getAvailableByDateRange.queryOptions({
+          input: { eventId: id, page: 1, limit: 100 },
+        }).queryKey,
+      });
       toast.success("Equipment assigned");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to assign equipment");
@@ -452,13 +468,18 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-medium">Available equipment</p>
-                      <p className="text-xs text-muted-foreground">Select multiple items for bulk assignment.</p>
+                      <p className="text-xs text-muted-foreground">Select multiple items for bulk assignment. Date conflicts are automatically filtered.</p>
                     </div>
                     <Button size="sm" onClick={handleAssignEquipment} disabled={selectedEquipmentIds.length === 0}>
                       <Plus className="mr-2 size-4" />
                       Assign selected
                     </Button>
                   </div>
+                  {unavailableEquipmentCount > 0 && (
+                    <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
+                      {unavailableEquipmentCount} item{unavailableEquipmentCount > 1 ? "s are" : " is"} currently unavailable for this event date range.
+                    </p>
+                  )}
                   <div className="grid gap-3 sm:grid-cols-2">
                     {availableEquipment.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No available equipment right now.</p>
