@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq, and, ilike, desc, count } from "@se-project/db";
+import { db, eq, and, ilike, desc, count, inArray, or } from "@se-project/db";
 import {
   equipmentItem,
   equipmentCategory,
+  equipmentAssignment,
 } from "@se-project/db/schema/equipment";
+import { event } from "@se-project/db/schema/events";
 import {
   protectedProcedure,
   eventHeadProcedure,
@@ -16,6 +18,7 @@ import {
   equipmentCategoryWithItemsSchema,
   equipmentItemDetailSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 const equipmentStatusSchema = equipmentItemSchema.shape.status;
 
@@ -36,6 +39,25 @@ const defaultEquipmentCategories: Array<{ name: string; description: string }> =
   { name: "LED Walls", description: "LED panel modules and processors" },
   { name: "Projectors", description: "Projectors, lenses, and projection accessories" },
 ];
+
+async function resolveScopedLinkedEquipmentIds(scopedUserIds: string[]) {
+  const scopedEvents = await db
+    .select({ id: event.id })
+    .from(event)
+    .where(inArray(event.createdBy, scopedUserIds));
+  const scopedEventIds = scopedEvents.map((row) => row.id);
+
+  if (scopedEventIds.length === 0) {
+    return [] as string[];
+  }
+
+  const scopedAssignments = await db
+    .select({ id: equipmentAssignment.equipmentId })
+    .from(equipmentAssignment)
+    .where(inArray(equipmentAssignment.eventId, scopedEventIds));
+
+  return Array.from(new Set(scopedAssignments.map((row) => row.id)));
+}
 
 export const equipmentRouter = {
   list: protectedProcedure
@@ -60,25 +82,24 @@ export const equipmentRouter = {
         total: z.number().int(),
       }),
     )
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { status, categoryId, search, page, limit } = input;
       const offset = (page - 1) * limit;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
 
-      const conditions = [];
-
-      if (status) {
-        conditions.push(eq(equipmentItem.status, status));
-      }
-
-      if (categoryId) {
-        conditions.push(eq(equipmentItem.categoryId, categoryId));
-      }
-
-      if (search) {
-        conditions.push(ilike(equipmentItem.name, `%${search}%`));
-      }
-
-      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const where = and(
+        or(
+          inArray(equipmentItem.createdBy, scopedUserIds),
+          linkedEquipmentIds.length > 0
+            ? inArray(equipmentItem.id, linkedEquipmentIds)
+            : undefined,
+        ),
+        status ? eq(equipmentItem.status, status) : undefined,
+        categoryId ? eq(equipmentItem.categoryId, categoryId) : undefined,
+        search ? ilike(equipmentItem.name, `%${search}%`) : undefined,
+      );
 
       const [items, totalResult] = await Promise.all([
         db.query.equipmentItem.findMany({
@@ -111,9 +132,21 @@ export const equipmentRouter = {
     })
     .input(z.object({ id: z.uuid() }))
     .output(equipmentItemDetailSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
+
       const result = await db.query.equipmentItem.findFirst({
-        where: eq(equipmentItem.id, input.id),
+        where: and(
+          eq(equipmentItem.id, input.id),
+          or(
+            inArray(equipmentItem.createdBy, scopedUserIds),
+            linkedEquipmentIds.length > 0
+              ? inArray(equipmentItem.id, linkedEquipmentIds)
+              : undefined,
+          ),
+        ),
         with: {
           category: true,
           assignments: {
@@ -152,7 +185,7 @@ export const equipmentRouter = {
       }),
     )
     .output(equipmentItemSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const category = await db.query.equipmentCategory.findFirst({
         where: eq(equipmentCategory.id, input.categoryId),
       });
@@ -165,7 +198,10 @@ export const equipmentRouter = {
 
       const [created] = await db
         .insert(equipmentItem)
-        .values(input)
+        .values({
+          ...input,
+          createdBy: context.session.user.id,
+        })
         .returning();
 
       return created!;
@@ -189,11 +225,22 @@ export const equipmentRouter = {
       }),
     )
     .output(equipmentItemSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { id, ...data } = input;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
 
       const existing = await db.query.equipmentItem.findFirst({
-        where: eq(equipmentItem.id, id),
+        where: and(
+          eq(equipmentItem.id, id),
+          or(
+            inArray(equipmentItem.createdBy, scopedUserIds),
+            linkedEquipmentIds.length > 0
+              ? inArray(equipmentItem.id, linkedEquipmentIds)
+              : undefined,
+          ),
+        ),
       });
 
       if (!existing) {
@@ -217,7 +264,17 @@ export const equipmentRouter = {
       const [updated] = await db
         .update(equipmentItem)
         .set(data)
-        .where(eq(equipmentItem.id, id))
+        .where(
+          and(
+            eq(equipmentItem.id, id),
+            or(
+              inArray(equipmentItem.createdBy, scopedUserIds),
+              linkedEquipmentIds.length > 0
+                ? inArray(equipmentItem.id, linkedEquipmentIds)
+                : undefined,
+            ),
+          ),
+        )
         .returning();
 
       return updated!;
@@ -236,9 +293,21 @@ export const equipmentRouter = {
       }),
     )
     .output(equipmentItemSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
+
       const existing = await db.query.equipmentItem.findFirst({
-        where: eq(equipmentItem.id, input.id),
+        where: and(
+          eq(equipmentItem.id, input.id),
+          or(
+            inArray(equipmentItem.createdBy, scopedUserIds),
+            linkedEquipmentIds.length > 0
+              ? inArray(equipmentItem.id, linkedEquipmentIds)
+              : undefined,
+          ),
+        ),
       });
 
       if (!existing) {
@@ -250,7 +319,17 @@ export const equipmentRouter = {
       const [updated] = await db
         .update(equipmentItem)
         .set({ status: input.status })
-        .where(eq(equipmentItem.id, input.id))
+        .where(
+          and(
+            eq(equipmentItem.id, input.id),
+            or(
+              inArray(equipmentItem.createdBy, scopedUserIds),
+              linkedEquipmentIds.length > 0
+                ? inArray(equipmentItem.id, linkedEquipmentIds)
+                : undefined,
+            ),
+          ),
+        )
         .returning();
 
       return updated!;

@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
 import { auth } from "@se-project/auth";
-import { db, desc, eq, ilike, sql } from "@se-project/db";
+import { db, and, desc, eq, ilike, inArray, sql } from "@se-project/db";
 import { event } from "@se-project/db/schema/events";
 import { equipmentCategory, equipmentItem } from "@se-project/db/schema/equipment";
 import { invoice, payment, vendor } from "@se-project/db/schema/finance";
+import { member, user } from "@se-project/db/schema/auth";
+import { staffAssignment } from "@se-project/db/schema/staff";
 import { protectedProcedure } from "../index";
+import { ensureScopedIds, resolveOrganizationId, resolveOrganizationUserIds } from "../tenant";
 
 const inputSchema = z.object({
   message: z.string().trim().min(1),
@@ -13,20 +16,22 @@ const inputSchema = z.object({
 
 const outputSchema = z.object({
   reply: z.string(),
-  intent: z.enum(["help", "summary", "create_event", "add_equipment", "add_vendor", "record_payment", "unknown"]),
+  intent: z.enum([
+    "help",
+    "summary",
+    "create_event",
+    "add_equipment",
+    "add_vendor",
+    "record_payment",
+    "add_staff",
+    "staff_workload",
+    "unknown",
+  ]),
   success: z.boolean(),
   navigationPath: z.string().optional(),
 });
 
-type ContextLike = {
-  headers: Headers;
-  session: {
-    user: {
-      id: string;
-      name?: string | null;
-    };
-  };
-};
+type ContextLike = any;
 
 const defaultEquipmentCategories: Array<{ name: string; description: string }> = [
   { name: "Speakers", description: "Passive and active PA speakers for events" },
@@ -148,24 +153,54 @@ function buildHelpReply() {
     "2) add equipment name=JBL Speaker, category=Speakers, status=available, purchaseCost=250000",
     "3) add vendor name=Star Catering, type=food, phone=9876543210, email=team@star.com",
     "4) record payment invoice=INV-12345, amount=150000, type=customer_payment, method=upi",
+    "5) add staff email=teammate@example.com, role=staff",
+    "6) staff workload",
     "",
     "General queries also work: 'show dashboard summary', 'how many unpaid invoices', 'what should I do next'.",
   ].join("\n");
 }
 
-async function summaryReply() {
-  const [eventCount] = await db.select({ total: sql<number>`count(*)` }).from(event);
-  const [invoiceCount] = await db.select({ total: sql<number>`count(*)` }).from(invoice);
+async function summaryReply(context: ContextLike) {
+  const { userIds } = await resolveOrganizationUserIds(context);
+  const scopedUserIds = ensureScopedIds(userIds);
+  const scopedEvents = await db
+    .select({ id: event.id })
+    .from(event)
+    .where(inArray(event.createdBy, scopedUserIds));
+  const scopedEventIds = scopedEvents.map((row) => row.id);
+
+  if (scopedEventIds.length === 0) {
+    return [
+      "Here is your current business snapshot:",
+      "- No events found in your organization yet.",
+      "- Tip: create your first event to start tracking invoices, vendors, and payments.",
+    ].join("\n");
+  }
+
+  const [eventCount] = await db
+    .select({ total: sql<number>`count(*)` })
+    .from(event)
+    .where(inArray(event.id, scopedEventIds));
+
+  const [invoiceCount] = await db
+    .select({ total: sql<number>`count(*)` })
+    .from(invoice)
+    .where(inArray(invoice.eventId, scopedEventIds));
+
   const [unpaidCount] = await db
     .select({ total: sql<number>`count(*)` })
     .from(invoice)
-    .where(sql`${invoice.status} != 'paid'`);
+    .where(and(inArray(invoice.eventId, scopedEventIds), sql`${invoice.status} != 'paid'`));
+
   const [revenueResult] = await db
     .select({ total: sql<number>`coalesce(sum(${event.totalRevenue}), 0)` })
-    .from(event);
+    .from(event)
+    .where(inArray(event.id, scopedEventIds));
+
   const [paymentResult] = await db
     .select({ total: sql<number>`coalesce(sum(${payment.amount}), 0)` })
-    .from(payment);
+    .from(payment)
+    .where(inArray(payment.eventId, scopedEventIds));
 
   return [
     "Here is your current business snapshot:",
@@ -175,6 +210,123 @@ async function summaryReply() {
     `- Event revenue tracked: ${formatInr(Number(revenueResult?.total ?? 0))}`,
     `- Total payments recorded: ${formatInr(Number(paymentResult?.total ?? 0))}`,
   ].join("\n");
+}
+
+async function handleAddStaff(message: string, context: ContextLike) {
+  const allowed = await hasPermission(context, { member: ["create"] });
+  if (!allowed) {
+    throw new ORPCError("FORBIDDEN", { message: "You do not have permission to add staff" });
+  }
+
+  const args = parseArgs(message);
+  const email = getArg(args, ["email"]);
+  const roleInput = getArg(args, ["role"]);
+  const role = roleInput === "event_head" ? "event_head" : "staff";
+
+  if (!email) {
+    return {
+      reply: "Missing email. Use: add staff email=teammate@example.com, role=staff",
+      intent: "add_staff" as const,
+      success: false,
+    };
+  }
+
+  const organizationId = await resolveOrganizationId(context);
+  const existingUser = await db.query.user.findFirst({ where: eq(user.email, email.trim().toLowerCase()) });
+
+  if (!existingUser) {
+    return {
+      reply: "No user account found with that email. Ask them to sign up first, then run this command again.",
+      intent: "add_staff" as const,
+      success: false,
+      navigationPath: "/staff",
+    };
+  }
+
+  const existingMembership = await db.query.member.findFirst({
+    where: and(eq(member.userId, existingUser.id), eq(member.organizationId, organizationId)),
+  });
+
+  if (existingMembership) {
+    return {
+      reply: `${existingUser.name || existingUser.email} is already in your team.`,
+      intent: "add_staff" as const,
+      success: true,
+      navigationPath: "/staff",
+    };
+  }
+
+  await db.insert(member).values({
+    id: crypto.randomUUID(),
+    userId: existingUser.id,
+    organizationId,
+    role,
+  });
+
+  return {
+    reply: `${existingUser.name || existingUser.email} added as ${role.replace("_", " ")}.`,
+    intent: "add_staff" as const,
+    success: true,
+    navigationPath: "/staff",
+  };
+}
+
+async function handleStaffWorkload(context: ContextLike) {
+  const { organizationId, userIds } = await resolveOrganizationUserIds(context);
+  const scopedUserIds = ensureScopedIds(userIds);
+  const now = new Date();
+
+  const teamMembers = await db
+    .select({
+      userId: user.id,
+      name: user.name,
+      role: member.role,
+    })
+    .from(user)
+    .innerJoin(member, eq(user.id, member.userId))
+    .where(
+      and(
+        eq(member.organizationId, organizationId),
+        inArray(member.userId, scopedUserIds),
+        inArray(member.role, ["staff", "event_head"]),
+      ),
+    );
+
+  if (teamMembers.length === 0) {
+    return {
+      reply: "No staff members found yet. Add staff from the Staff page or by command: add staff email=...",
+      intent: "staff_workload" as const,
+      success: true,
+      navigationPath: "/staff",
+    };
+  }
+
+  const assignments = await db
+    .select({
+      userId: staffAssignment.userId,
+      startDate: event.startDate,
+      createdBy: event.createdBy,
+    })
+    .from(staffAssignment)
+    .innerJoin(event, eq(staffAssignment.eventId, event.id))
+    .where(inArray(staffAssignment.userId, teamMembers.map((memberRow) => memberRow.userId)));
+
+  const lines = teamMembers.map((memberRow) => {
+    const memberAssignments = assignments.filter(
+      (assignment) =>
+        assignment.userId === memberRow.userId &&
+        scopedUserIds.includes(assignment.createdBy),
+    );
+    const upcoming = memberAssignments.filter((assignment) => assignment.startDate >= now).length;
+    return `- ${memberRow.name || "Unnamed user"}: ${upcoming} upcoming (${memberAssignments.length} total)`;
+  });
+
+  return {
+    reply: ["Staff workload summary:", ...lines].join("\n"),
+    intent: "staff_workload" as const,
+    success: true,
+    navigationPath: "/staff",
+  };
 }
 
 async function handleCreateEvent(message: string, context: ContextLike) {
@@ -279,6 +431,7 @@ async function handleAddEquipment(message: string, context: ContextLike) {
       purchaseDate: parseDate(getArg(args, ["purchasedate", "date"])),
       purchaseCost: parseMoneyToPaise(getArg(args, ["purchasecost", "cost"])),
       notes: getArg(args, ["notes"]),
+      createdBy: context.session.user.id,
     })
     .returning();
 
@@ -318,6 +471,7 @@ async function handleAddVendor(message: string, context: ContextLike) {
       type: normalizedType,
       phone: getArg(args, ["phone"]),
       email: getArg(args, ["email"]),
+      createdBy: context.session.user.id,
     })
     .returning();
 
@@ -452,11 +606,15 @@ export const chatRouter = {
         normalized.includes("unpaid invoice")
       ) {
         return {
-          reply: await summaryReply(),
+          reply: await summaryReply(context as ContextLike),
           intent: "summary" as const,
           success: true,
           navigationPath: "/dashboard",
         };
+      }
+
+      if (normalized.includes("staff workload") || normalized.includes("team workload")) {
+        return handleStaffWorkload(context as ContextLike);
       }
 
       if (normalized.startsWith("create event") || normalized.includes(" create event ")) {
@@ -473,6 +631,10 @@ export const chatRouter = {
 
       if (normalized.startsWith("record payment") || normalized.includes(" record payment ")) {
         return handleRecordPayment(message, context as ContextLike);
+      }
+
+      if (normalized.startsWith("add staff") || normalized.includes(" add staff ")) {
+        return handleAddStaff(message, context as ContextLike);
       }
 
       return {

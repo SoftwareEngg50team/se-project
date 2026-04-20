@@ -17,14 +17,23 @@ import {
 import { user } from "./auth";
 import { event } from "./events";
 
-export const vendor = pgTable("vendor", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  phone: text("phone"),
-  email: text("email"),
-  type: vendorTypeEnum("type").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const vendor = pgTable(
+  "vendor",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    email: text("email"),
+    type: vendorTypeEnum("type").notNull(),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "restrict",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("vendor_created_by_idx").on(table.createdBy),
+  ],
+);
 
 export const expense = pgTable(
   "expense",

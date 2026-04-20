@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@se-project/auth";
+import { env } from "@se-project/env/server";
 import { db, eq } from "@se-project/db";
 import { invoice } from "@se-project/db/schema/finance";
 import { getInvoiceExportData } from "@/lib/invoice-export";
@@ -47,20 +48,40 @@ export async function POST(
 
   const subject = body.subject?.trim() || formatDefaultSubject(exportData.invoiceNumber, exportData.event.name);
 
-  const result = await sendInvoiceViaGmail({
-    to: recipient,
-    subject,
-    message: body.message,
-    data: exportData,
-  });
-
-  if (exportData.status === "draft") {
-    await db.update(invoice).set({ status: "sent" }).where(eq(invoice.id, id));
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) {
+    return NextResponse.json(
+      {
+        error: "Invoice email is not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD on the server.",
+      },
+      { status: 503 },
+    );
   }
 
-  return NextResponse.json({
-    success: true,
-    messageId: result.messageId,
-    sentTo: recipient,
-  });
+  try {
+    const result = await sendInvoiceViaGmail({
+      to: recipient,
+      subject,
+      message: body.message,
+      data: exportData,
+    });
+
+    if (exportData.status === "draft") {
+      await db.update(invoice).set({ status: "sent" }).where(eq(invoice.id, id));
+    }
+
+    return NextResponse.json({
+      success: true,
+      messageId: result.messageId,
+      sentTo: recipient,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown email delivery error";
+    return NextResponse.json(
+      {
+        error: "Failed to send invoice email.",
+        details: message,
+      },
+      { status: 502 },
+    );
+  }
 }

@@ -30,6 +30,9 @@ export const equipmentItem = pgTable(
     purchaseDate: timestamp("purchase_date"),
     purchaseCost: integer("purchase_cost"),
     notes: text("notes"),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "restrict",
+    }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()
@@ -39,6 +42,7 @@ export const equipmentItem = pgTable(
   (table) => [
     index("equipment_item_category_idx").on(table.categoryId),
     index("equipment_item_status_idx").on(table.status),
+    index("equipment_item_created_by_idx").on(table.createdBy),
   ],
 );
 
