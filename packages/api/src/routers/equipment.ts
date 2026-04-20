@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq, and, ilike, desc, count, inArray, or } from "@se-project/db";
+import { db, eq, and, ilike, desc, count, inArray, or, sql } from "@se-project/db";
 import {
   equipmentItem,
   equipmentCategory,
@@ -378,5 +378,118 @@ export const equipmentRouter = {
         .returning();
 
       return created!;
+    }),
+
+  getAvailableByDateRange: protectedProcedure
+    .route({
+      tags: ["Equipment"],
+      summary: "Get equipment available for specific date range",
+      description:
+        "Check which equipment items are available (not assigned) during a specific event date range. Helps prevent double-booking.",
+    })
+    .input(
+      z.object({
+        eventId: z.uuid(),
+        categoryId: z.uuid().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(10),
+      }),
+    )
+    .output(
+      z.object({
+        items: z.array(
+          equipmentItemWithCategorySchema.extend({
+            conflictingEvents: z.array(z.object({
+              eventId: z.string().uuid(),
+              eventName: z.string(),
+              startDate: z.date(),
+              endDate: z.date(),
+            })),
+          }),
+        ),
+        total: z.number().int(),
+        unavailableCount: z.number().int(),
+      }),
+    )
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      
+      // Get the event to check date range
+      const eventRecord = await db.query.event.findFirst({
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
+      });
+
+      if (!eventRecord) {
+        throw new ORPCError("NOT_FOUND", { message: "Event not found" });
+      }
+
+      const offset = (input.page - 1) * input.limit;
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
+
+      // Get all equipment items
+      const allEquipment = await db.query.equipmentItem.findMany({
+        where: and(
+          or(
+            inArray(equipmentItem.createdBy, scopedUserIds),
+            linkedEquipmentIds.length > 0
+              ? inArray(equipmentItem.id, linkedEquipmentIds)
+              : undefined,
+          ),
+          input.categoryId ? eq(equipmentItem.categoryId, input.categoryId) : undefined,
+        ),
+        with: {
+          category: true,
+          assignments: {
+            with: {
+              event: true,
+            },
+          },
+        },
+      });
+
+      // Check for overlapping assignments
+      const itemsWithConflicts = allEquipment.map((item) => {
+        const conflictingEvents = item.assignments
+          .filter((assignment) => {
+            // Filter out returns
+            if (assignment.returnedAt) return false;
+            
+            // Check for date overlap
+            const assignedStart = new Date(assignment.event.startDate);
+            const assignedEnd = new Date(assignment.event.endDate);
+            const eventStart = new Date(eventRecord.startDate);
+            const eventEnd = new Date(eventRecord.endDate);
+
+            return !(eventEnd < assignedStart || eventStart > assignedEnd);
+          })
+          .map((assignment) => ({
+            eventId: assignment.event.id,
+            eventName: assignment.event.name,
+            startDate: assignment.event.startDate,
+            endDate: assignment.event.endDate,
+          }));
+
+        return {
+          ...item,
+          conflictingEvents,
+        };
+      });
+
+      // Separate available and unavailable
+      const available = itemsWithConflicts.filter((item) => item.conflictingEvents.length === 0);
+      const unavailable = itemsWithConflicts.filter((item) => item.conflictingEvents.length > 0);
+
+      const total = available.length;
+      const paginated = available.slice(offset, offset + input.limit);
+
+      return {
+        items: paginated,
+        total,
+        unavailableCount: unavailable.length,
+      };
     }),
 };

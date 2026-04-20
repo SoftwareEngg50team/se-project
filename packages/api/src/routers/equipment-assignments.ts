@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq } from "@se-project/db";
+import { db, eq, and, inArray, or, sql } from "@se-project/db";
 import { equipmentItem } from "@se-project/db/schema/equipment";
 import { equipmentAssignment } from "@se-project/db/schema/equipment";
 import { event } from "@se-project/db/schema/events";
@@ -12,6 +12,7 @@ import {
   equipmentAssignmentSchema,
   equipmentAssignmentDetailSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 export const equipmentAssignmentsRouter = {
   assign: eventHeadProcedure
@@ -19,7 +20,7 @@ export const equipmentAssignmentsRouter = {
       tags: ["Equipment Assignments"],
       summary: "Assign equipment to event",
       description:
-        "Assign an available equipment item to an event. Equipment status is automatically updated to 'assigned'. Requires the item to be in 'available' status.",
+        "Assign an available equipment item to an event. Equipment status is automatically updated to 'assigned'. Checks for date conflicts with other events. Requires the item to be in 'available' status.",
     })
     .input(
       z.object({
@@ -30,9 +31,14 @@ export const equipmentAssignmentsRouter = {
     .output(equipmentAssignmentSchema)
     .handler(async ({ input, context }) => {
       const userId = context.session.user.id;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
 
       const eventRecord = await db.query.event.findFirst({
-        where: eq(event.id, input.eventId),
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
       });
 
       if (!eventRecord) {
@@ -53,6 +59,33 @@ export const equipmentAssignmentsRouter = {
         throw new ORPCError("CONFLICT", {
           message: "Equipment is not available for assignment",
         });
+      }
+
+      // Check for conflicting assignments on overlapping dates
+      const conflictingAssignments = await db.query.equipmentAssignment.findMany({
+        where: and(
+          eq(equipmentAssignment.equipmentId, input.equipmentId),
+          // Filter out returned items
+          sql`${equipmentAssignment.returnedAt} IS NULL`,
+        ),
+        with: {
+          event: true,
+        },
+      });
+
+      const eventStart = new Date(eventRecord.startDate);
+      const eventEnd = new Date(eventRecord.endDate);
+
+      for (const assignment of conflictingAssignments) {
+        const assignedStart = new Date(assignment.event.startDate);
+        const assignedEnd = new Date(assignment.event.endDate);
+
+        // Check for date overlap
+        if (!(eventEnd < assignedStart || eventStart > assignedEnd)) {
+          throw new ORPCError("CONFLICT", {
+            message: `Equipment is already assigned to "${assignment.event.name}" during this period`,
+          });
+        }
       }
 
       const [assignment] = await db
@@ -87,14 +120,26 @@ export const equipmentAssignmentsRouter = {
       }),
     )
     .output(equipmentAssignmentSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const existing = await db.query.equipmentAssignment.findFirst({
         where: eq(equipmentAssignment.id, input.assignmentId),
+        with: {
+          event: true,
+        },
       });
 
       if (!existing) {
         throw new ORPCError("NOT_FOUND", {
           message: "Assignment not found",
+        });
+      }
+
+      if (!scopedUserIds.includes(existing.event.createdBy)) {
+        throw new ORPCError("FORBIDDEN", {
+          message: "You do not have access to this assignment",
         });
       }
 
@@ -134,7 +179,21 @@ export const equipmentAssignmentsRouter = {
     })
     .input(z.object({ eventId: z.uuid() }))
     .output(z.array(equipmentAssignmentDetailSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
+      const eventRecord = await db.query.event.findFirst({
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
+      });
+
+      if (!eventRecord) {
+        return [];
+      }
+
       const assignments = await db.query.equipmentAssignment.findMany({
         where: eq(equipmentAssignment.eventId, input.eventId),
         with: {
