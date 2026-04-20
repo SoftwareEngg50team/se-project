@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent";
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_MODEL_FALLBACKS = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"] as const;
 
 type AssistantAction = "create_event" | "add_vendor" | "record_payment" | "create_invoice";
 
@@ -36,6 +37,63 @@ function parseCommand(text: string): AssistantCommand {
   };
 }
 
+type GeminiGenerateResponse = {
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+  }>;
+};
+
+async function callGemini(prompt: string, apiKey: string): Promise<{ text: string; model: string }> {
+  const requestBody = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json",
+    },
+  };
+
+  let lastError = "";
+
+  for (const model of GEMINI_MODEL_FALLBACKS) {
+    const response = await fetch(`${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      lastError = `${model} -> ${response.status} ${errorText}`;
+
+      // Continue on 404 or permission-style errors to try fallback models.
+      if (response.status === 404 || response.status === 400 || response.status === 403) {
+        continue;
+      }
+
+      throw new Error(`Gemini request failed: ${lastError}`);
+    }
+
+    const result = (await response.json()) as GeminiGenerateResponse;
+    const textResult = result.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+    if (!textResult) {
+      lastError = `${model} -> empty text response`;
+      continue;
+    }
+
+    return { text: textResult, model };
+  }
+
+  throw new Error(`Gemini request failed for all fallback models: ${lastError || "No response"}`);
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as { text?: string };
@@ -57,43 +115,10 @@ export async function POST(request: Request) {
       `User input: ${text}`,
     ].join("\n\n");
 
-    const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return NextResponse.json(
-        { error: `Gemini request failed: ${response.status} ${errorText}` },
-        { status: 502 },
-      );
-    }
-
-    const result = (await response.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-      }>;
-    };
-
-    const textResult = result.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const { text: textResult, model } = await callGemini(prompt, apiKey);
     const command = parseCommand(textResult);
 
-    return NextResponse.json({ command });
+    return NextResponse.json({ command, model });
   } catch (error) {
     return NextResponse.json(
       {
