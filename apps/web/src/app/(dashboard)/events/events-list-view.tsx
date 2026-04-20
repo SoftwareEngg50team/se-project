@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Plus, Calendar } from "lucide-react";
+import { Plus, Calendar, List } from "lucide-react";
 import { Button } from "@se-project/ui/components/button";
 import {
   Select,
@@ -13,11 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@se-project/ui/components/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@se-project/ui/components/tabs";
 import { orpc } from "@/utils/orpc";
 import { DataTable } from "@/components/shared/data-table";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { EmptyState } from "@/components/shared/empty-state";
+import { EventsCalendarView } from "./events-calendar-view";
 
 type Event = {
   id: string;
@@ -87,6 +89,7 @@ type StatusFilter =
 
 export function EventsListView() {
   const [filterStatus, setFilterStatus] = useState<StatusFilter>("all");
+  const [view, setView] = useState<"list" | "calendar">("list");
 
   const { data, isLoading } = useQuery(
     orpc.events.list.queryOptions({
@@ -95,6 +98,11 @@ export function EventsListView() {
   );
 
   const events = (data?.events ?? []) as Event[];
+
+  // For calendar view, we don't apply status filter
+  if (view === "calendar") {
+    return <EventsCalendarView />;
+  }
 
   return (
     <div className="space-y-8">
@@ -105,24 +113,43 @@ export function EventsListView() {
         </Button>
       </PageHeader>
 
-      <div className="flex items-center gap-4">
-        <Select
-          value={filterStatus}
-          onValueChange={(value) => setFilterStatus(value as StatusFilter)}
-        >
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="Filter by status">
-              {{ all: "All Statuses", upcoming: "Upcoming", in_progress: "In Progress", completed: "Completed", cancelled: "Cancelled" }[filterStatus]}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
-            <SelectItem value="upcoming">Upcoming</SelectItem>
-            <SelectItem value="in_progress">In Progress</SelectItem>
-            <SelectItem value="completed">Completed</SelectItem>
-            <SelectItem value="cancelled">Cancelled</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-4">
+          <Tabs
+            value={view}
+            onValueChange={(value) => setView(value as "list" | "calendar")}
+            className="w-auto"
+          >
+            <TabsList className="inline-flex">
+              <TabsTrigger value="list" className="gap-2">
+                <List className="size-4" />
+                List
+              </TabsTrigger>
+              <TabsTrigger value="calendar" className="gap-2">
+                <Calendar className="size-4" />
+                Calendar
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          <Select
+            value={filterStatus}
+            onValueChange={(value) => setFilterStatus(value as StatusFilter)}
+          >
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Filter by status">
+                {{ all: "All Statuses", upcoming: "Upcoming", in_progress: "In Progress", completed: "Completed", cancelled: "Cancelled" }[filterStatus]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="upcoming">Upcoming</SelectItem>
+              <SelectItem value="in_progress">In Progress</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {!isLoading && events.length === 0 ? (
