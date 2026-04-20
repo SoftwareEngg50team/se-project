@@ -10,6 +10,7 @@ import {
   Store,
   CalendarDays,
   ArrowRight,
+  AlertCircle,
 } from "lucide-react";
 import {
   Card,
@@ -84,6 +85,10 @@ export function DashboardView() {
     orpc.dashboard.getRecentActivity.queryOptions({ input: { limit: 10 } }),
   );
 
+  const { data: overdueinvoicesData, isLoading: overdueInvoicesLoading } = useQuery(
+    orpc.invoices.list.queryOptions({ input: { overdueDays: 15, page: 1, limit: 10 } }),
+  );
+
   const totalRevenue = summary?.totalRevenue ?? 0;
   const totalExpenses = summary?.totalExpenses ?? 0;
   const outstandingInvoices = summary?.outstandingInvoices ?? 0;
@@ -97,6 +102,9 @@ export function DashboardView() {
     vendorPayments,
     1,
   );
+
+  const overdueInvoices = overdueinvoicesData?.invoices ?? [];
+  const totalOverdueAmount = overdueInvoices.reduce((sum, inv) => sum + (inv.amount ?? 0), 0);
 
   return (
     <div className="space-y-8">
@@ -269,6 +277,64 @@ export function DashboardView() {
           </CardContent>
         </Card>
       </div>
+
+      {overdueInvoices.length > 0 && (
+        <Card className="shadow-sm border-red-200 dark:border-red-900">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base text-red-600 dark:text-red-400">
+              <AlertCircle className="size-5" />
+              Overdue Invoices (15+ days)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4 rounded-lg bg-red-50 p-3 dark:bg-red-950/30">
+              <p className="text-sm font-semibold text-red-700 dark:text-red-300">
+                {overdueInvoices.length} invoice{overdueInvoices.length > 1 ? "s" : ""} • Total: {formatRupees(totalOverdueAmount)}
+              </p>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-border/60">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/30 hover:bg-muted/30">
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider">Invoice</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider">Event</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider">Amount</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider">Due Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {overdueInvoices.map((inv) => (
+                    <TableRow key={inv.id} className="hover:bg-red-50 dark:hover:bg-red-950/20">
+                      <TableCell className="text-xs">
+                        <Link
+                          href={`/invoices/${inv.id}`}
+                          className="font-medium text-red-600 dark:text-red-400 hover:underline"
+                        >
+                          {inv.invoiceNumber}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <Link
+                          href={`/events/${inv.eventId}`}
+                          className="transition-colors hover:text-primary"
+                        >
+                          {inv.event?.name ?? "—"}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs font-medium">
+                        {formatRupees(inv.amount ?? 0)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {formatDate(inv.dueDate)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
