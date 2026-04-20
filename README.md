@@ -87,6 +87,9 @@ INVOICE_UPI_NAME=
 GMAIL_USER=your-account@gmail.com
 GMAIL_APP_PASSWORD=your-16-char-google-app-password
 GMAIL_FROM_NAME=EventFlow Billing
+
+# Required for Voice AI Assistant (Gemini)
+GEMINI_API_KEY=your-google-gemini-api-key
 ```
 
 ### Gmail Setup Notes
@@ -95,6 +98,12 @@ GMAIL_FROM_NAME=EventFlow Billing
 - Generate an App Password in Google Account Security settings.
 - Use that App Password in `GMAIL_APP_PASSWORD` (do not use your normal Gmail password).
 - If Gmail vars are missing, the app still runs, but invoice email sending will fail.
+
+### Gemini Assistant Notes
+
+- The voice assistant uses browser Web Speech API for speech-to-text and Gemini for intent parsing.
+- Set `GEMINI_API_KEY` in local `apps/web/.env` and Vercel Production environment variables.
+- If `GEMINI_API_KEY` is missing, `/api/assistant` returns an explicit configuration error.
 
 ### Step 5: Push the database schema
 
@@ -221,6 +230,63 @@ se-project/
 | `bun run db:generate` | Generate database migrations |
 | `bun run db:migrate` | Run database migrations |
 | `bun run db:studio` | Open Drizzle Studio (database GUI) |
+
+---
+
+## Deploy to Vercel
+
+This repository is a Bun workspace monorepo. The app that should be deployed is `apps/web`.
+
+### 1. Import project in Vercel
+
+- Create a new project from this Git repository.
+- Keep the repository root as the project root (do not move to `apps/web`).
+- `vercel.json` is already included and configures Bun install/build commands.
+
+### 2. Set required environment variables in Vercel
+
+Add these in Project Settings -> Environment Variables (Preview + Production):
+
+```env
+DATABASE_URL=postgresql://<user>:<password>@<host>:<port>/<db>
+BETTER_AUTH_SECRET=<at-least-32-characters>
+BETTER_AUTH_URL=https://<your-vercel-domain>
+CORS_ORIGIN=https://<your-vercel-domain>
+```
+
+Optional (only needed if you use branded invoice fields or invoice email sending):
+
+```env
+INVOICE_BRAND_COLOR=
+INVOICE_COMPANY_ADDRESS=
+INVOICE_COMPANY_EMAIL=
+INVOICE_COMPANY_PHONE=
+INVOICE_COMPANY_TAX_ID=
+INVOICE_COMPANY_WEBSITE=
+INVOICE_BANK_ACCOUNT_NAME=
+INVOICE_BANK_ACCOUNT_NUMBER=
+INVOICE_BANK_IFSC=
+INVOICE_BANK_NAME=
+INVOICE_PAYMENT_NOTES=
+INVOICE_PAYMENT_TERMS=
+INVOICE_UPI_ID=
+INVOICE_UPI_NAME=
+GMAIL_USER=
+GMAIL_APP_PASSWORD=
+GMAIL_FROM_NAME=
+```
+
+### 3. Post-deploy checks
+
+- Open the deployed URL.
+- Confirm login/sign-up works.
+- Confirm protected pages load (RBAC + org bootstrap).
+- If using invoices, verify export and Gmail send flows.
+
+### Notes
+
+- Use a managed PostgreSQL database for production (Neon, Supabase, RDS, etc.).
+- If your domain changes, update `BETTER_AUTH_URL` and `CORS_ORIGIN` to match exactly.
 
 ---
 
