@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Mail,
   Smartphone,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@se-project/ui/components/button";
@@ -89,6 +90,9 @@ export function NotificationsView() {
     orpc.notifications.getUnreadCount.queryOptions(),
   );
   const markRead = useMutation(orpc.notifications.markRead.mutationOptions());
+  const sendWeeklyDigest = useMutation(
+    orpc.notifications.sendWeeklyDigest.mutationOptions(),
+  );
 
   const notifications = notificationsQuery.data?.notifications ?? [];
   const unreadCount = unreadCountQuery.data?.count ?? 0;
@@ -128,12 +132,38 @@ export function NotificationsView() {
     setPreferences((current) => ({ ...current, [key]: !current[key] }));
   };
 
+  const handleSendWeeklyDigest = async () => {
+    await sendWeeklyDigest.mutateAsync(undefined, {
+      onSuccess: async (result) => {
+        await queryClient.invalidateQueries({
+          queryKey: orpc.notifications.list.queryOptions({
+            input: { page: 1, limit: 100, unreadOnly },
+          }).queryKey,
+        });
+        await queryClient.invalidateQueries({
+          queryKey: orpc.notifications.getUnreadCount.queryOptions().queryKey,
+        });
+        toast.success(`Weekly digest sent to ${result.recipients} staff member(s)`);
+      },
+      onError: (error) =>
+        toast.error(error.message || "Failed to send weekly digest"),
+    });
+  };
+
   return (
     <div className="space-y-8">
       <PageHeader
         title="Notifications"
         description="Review recent alerts and fine-tune how EventFlow reaches you."
       >
+        <Button
+          variant="outline"
+          onClick={handleSendWeeklyDigest}
+          disabled={sendWeeklyDigest.isPending}
+        >
+          <Send className="mr-2 size-4" />
+          {sendWeeklyDigest.isPending ? "Sending..." : "Send weekly digest"}
+        </Button>
         <div className="flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-3 py-1.5 text-sm">
           <BellRing className="size-4 text-primary" />
           <span className="font-medium">{unreadCount} unread</span>

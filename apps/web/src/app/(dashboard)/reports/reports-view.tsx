@@ -34,6 +34,9 @@ export function ReportsView() {
   const { data: eventsData, isLoading: eventsLoading } = useQuery(orpc.events.list.queryOptions({ input: { page: 1, limit: 100 } }));
   const { data: equipmentData, isLoading: equipmentLoading } = useQuery(orpc.equipment.list.queryOptions({ input: { page: 1, limit: 100 } }));
   const { data: staffData, isLoading: staffLoading } = useQuery(orpc.staff.list.queryOptions({ input: { page: 1, limit: 100 } }));
+  const { data: monthlyUtilization, isLoading: utilizationLoading } = useQuery(
+    orpc.equipment.getMonthlyUtilization.queryOptions({ input: { months: 6 } }),
+  );
 
   const events = eventsData?.events ?? [];
   const equipmentItems = equipmentData?.items ?? [];
@@ -202,6 +205,41 @@ export function ReportsView() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Wrench className="size-5 text-primary" />
+            Monthly Equipment Utilization (6 months)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {utilizationLoading ? (
+            <p className="text-sm text-muted-foreground">Loading utilization report...</p>
+          ) : !monthlyUtilization || monthlyUtilization.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No utilization data found.</p>
+          ) : (
+            <div className="space-y-4">
+              {monthlyUtilization.map((row) => (
+                <div key={row.monthKey} className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium">{row.monthLabel}</span>
+                    <span className="text-muted-foreground">
+                      {row.uniqueEquipmentCount} items • {row.assignmentCount} assignments • {row.utilizationRate}%
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-muted/60">
+                    <div
+                      className="h-2 rounded-full bg-primary"
+                      style={{ width: `${Math.min(100, Math.max(0, row.utilizationRate))}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="shadow-sm">

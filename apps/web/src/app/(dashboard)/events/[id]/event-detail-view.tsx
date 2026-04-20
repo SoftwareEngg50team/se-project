@@ -121,6 +121,7 @@ type AvailableStaff = {
   name: string;
   email: string;
   role: string | null;
+  hourlyRate?: number;
 };
 
 const statusTransitions: Record<EventStatus, { label: string; next: EventStatus }[]> = {
@@ -179,6 +180,7 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
   const equipmentAssignmentsQuery = useQuery(orpc.equipmentAssignments.getByEvent.queryOptions({ input: { eventId: id } }));
   const staffAssignmentsQuery = useQuery(orpc.staffAssignments.getByEvent.queryOptions({ input: { eventId: id } }));
   const attendanceQuery = useQuery(orpc.attendance.getByEvent.queryOptions({ input: { eventId: id } }));
+  const payoutQuery = useQuery(orpc.attendance.getEventPayout.queryOptions({ input: { eventId: id } }));
   const expensesQuery = useQuery(orpc.expenses.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
   const paymentsQuery = useQuery(orpc.payments.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
   const invoicesQuery = useQuery(orpc.invoices.list.queryOptions({ input: { eventId: id, page: 1, limit: 100 } }));
@@ -204,6 +206,9 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
   const equipmentAssignments = (equipmentAssignmentsQuery.data ?? []) as EquipmentAssignmentRow[];
   const staffAssignments = (staffAssignmentsQuery.data ?? []) as StaffAssignmentRow[];
   const attendanceRecords = (attendanceQuery.data ?? []) as AttendanceRow[];
+  const payoutRows = payoutQuery.data?.rows ?? [];
+  const totalPayout = payoutQuery.data?.totalPayout ?? 0;
+  const totalAttendanceHours = payoutQuery.data?.totalHours ?? 0;
   const expenses = (expensesQuery.data?.expenses ?? []) as ExpenseRow[];
   const payments = (paymentsQuery.data?.payments ?? []) as PaymentRow[];
   const invoices = (invoicesQuery.data?.invoices ?? []) as InvoiceRow[];
@@ -716,6 +721,46 @@ export function EventDetailView({ paramsPromise }: EventDetailViewProps) {
                       <Badge variant="outline">{record.hoursWorked != null ? `${record.hoursWorked}h` : "-"}</Badge>
                     </div>
                   ))
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Salary Payout</CardTitle>
+                <CardDescription>Calculated from attendance hours and hourly rates.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <MiniStat label="Total hours" value={String(totalAttendanceHours)} />
+                  <MiniStat label="Total payout" value={formatCurrency(totalPayout)} />
+                </div>
+
+                {payoutRows.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No payout rows yet. Record attendance and set hourly rates from Staff page.</p>
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-border/60">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                        <tr>
+                          <th className="px-4 py-3">Staff</th>
+                          <th className="px-4 py-3">Hours</th>
+                          <th className="px-4 py-3">Rate/hr</th>
+                          <th className="px-4 py-3 text-right">Payout</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {payoutRows.map((row) => (
+                          <tr key={row.userId} className="border-t">
+                            <td className="px-4 py-4 font-medium">{row.name}</td>
+                            <td className="px-4 py-4 text-xs text-muted-foreground">{row.totalHours}</td>
+                            <td className="px-4 py-4 text-xs text-muted-foreground">{formatCurrency(row.hourlyRate)}</td>
+                            <td className="px-4 py-4 text-right font-medium">{formatCurrency(row.payout)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </CardContent>
             </Card>

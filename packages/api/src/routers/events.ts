@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq, and, ilike, sql, desc, or, count } from "@se-project/db";
+import { db, eq, and, ilike, sql, desc, or, count, inArray } from "@se-project/db";
 import { event } from "@se-project/db/schema/events";
 import { expense } from "@se-project/db/schema/finance";
+import { staffAssignment } from "@se-project/db/schema/staff";
+import { notification } from "@se-project/db/schema/notifications";
 import {
   protectedProcedure,
   eventHeadProcedure,
@@ -12,6 +14,7 @@ import {
   eventSchema,
   eventWithCreatorSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 export const eventsRouter = {
   list: protectedProcedure
@@ -37,23 +40,27 @@ export const eventsRouter = {
         total: z.number().int(),
       }),
     )
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { status, search, page, limit } = input;
       const offset = (page - 1) * limit;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
 
-      const conditions = [];
+      const conditions = [inArray(event.createdBy, scopedUserIds)];
 
       if (status) {
         conditions.push(eq(event.status, status));
       }
 
       if (search) {
-        conditions.push(
-          or(
-            ilike(event.name, `%${search}%`),
-            ilike(event.clientName, `%${search}%`),
-          ),
+        const searchCondition = or(
+          ilike(event.name, `%${search}%`),
+          ilike(event.clientName, `%${search}%`),
         );
+
+        if (searchCondition) {
+          conditions.push(searchCondition);
+        }
       }
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -85,9 +92,15 @@ export const eventsRouter = {
     })
     .input(z.object({ id: z.uuid() }))
     .output(eventWithCreatorSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const result = await db.query.event.findFirst({
-        where: eq(event.id, input.id),
+        where: and(
+          eq(event.id, input.id),
+          inArray(event.createdBy, scopedUserIds),
+        ),
         with: {
           creator: true,
         },
@@ -155,11 +168,16 @@ export const eventsRouter = {
       }),
     )
     .output(eventSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { id, ...data } = input;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
 
       const existing = await db.query.event.findFirst({
-        where: eq(event.id, id),
+        where: and(
+          eq(event.id, id),
+          inArray(event.createdBy, scopedUserIds),
+        ),
       });
 
       if (!existing) {
@@ -169,7 +187,12 @@ export const eventsRouter = {
       const [updated] = await db
         .update(event)
         .set(data)
-        .where(eq(event.id, id))
+        .where(
+          and(
+            eq(event.id, id),
+            inArray(event.createdBy, scopedUserIds),
+          ),
+        )
         .returning();
 
       return updated!;
@@ -188,9 +211,15 @@ export const eventsRouter = {
       }),
     )
     .output(eventSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const existing = await db.query.event.findFirst({
-        where: eq(event.id, input.id),
+        where: and(
+          eq(event.id, input.id),
+          inArray(event.createdBy, scopedUserIds),
+        ),
       });
 
       if (!existing) {
@@ -200,8 +229,30 @@ export const eventsRouter = {
       const [updated] = await db
         .update(event)
         .set({ status: input.status })
-        .where(eq(event.id, input.id))
+        .where(
+          and(
+            eq(event.id, input.id),
+            inArray(event.createdBy, scopedUserIds),
+          ),
+        )
         .returning();
+
+      if (input.status === "cancelled" && existing.status !== "cancelled") {
+        const assignments = await db.query.staffAssignment.findMany({
+          where: eq(staffAssignment.eventId, input.id),
+        });
+
+        if (assignments.length > 0) {
+          await db.insert(notification).values(
+            assignments.map((assignment) => ({
+              userId: assignment.userId,
+              eventId: input.id,
+              type: "cancellation" as const,
+              message: `Event \"${existing.name}\" has been cancelled. Please do not report for this assignment.`,
+            })),
+          );
+        }
+      }
 
       return updated!;
     }),
@@ -214,16 +265,29 @@ export const eventsRouter = {
     })
     .input(z.object({ id: z.uuid() }))
     .output(z.object({ success: z.literal(true) }))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const existing = await db.query.event.findFirst({
-        where: eq(event.id, input.id),
+        where: and(
+          eq(event.id, input.id),
+          inArray(event.createdBy, scopedUserIds),
+        ),
       });
 
       if (!existing) {
         throw new ORPCError("NOT_FOUND", { message: "Event not found" });
       }
 
-      await db.delete(event).where(eq(event.id, input.id));
+      await db
+        .delete(event)
+        .where(
+          and(
+            eq(event.id, input.id),
+            inArray(event.createdBy, scopedUserIds),
+          ),
+        );
 
       return { success: true };
     }),
@@ -243,9 +307,15 @@ export const eventsRouter = {
         profit: z.number(),
       }),
     )
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const eventData = await db.query.event.findFirst({
-        where: eq(event.id, input.id),
+        where: and(
+          eq(event.id, input.id),
+          inArray(event.createdBy, scopedUserIds),
+        ),
         with: {
           creator: true,
         },

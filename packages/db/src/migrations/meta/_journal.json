@@ -29,6 +29,13 @@
       "when": 1779000000000,
       "tag": "0003_bright_haven",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779000001000,
+      "tag": "0004_staff_hourly_rate",
+      "breakpoints": true
     }
   ]
 }

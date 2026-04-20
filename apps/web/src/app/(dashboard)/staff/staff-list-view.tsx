@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "@tanstack/react-form";
@@ -37,6 +37,7 @@ type StaffUser = {
   name: string;
   email: string;
   role: string | null;
+  hourlyRate: number;
   image: string | null;
   createdAt: string | Date;
   updatedAt: string | Date;
@@ -84,6 +85,7 @@ const addStaffSchema = z.object({
 export function StaffListView() {
   const [filterRole, setFilterRole] = useState<RoleFilter>("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [rateInputs, setRateInputs] = useState<Record<string, string>>({});
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery(
@@ -97,6 +99,9 @@ export function StaffListView() {
   );
 
   const addStaff = useMutation(orpc.staff.addByEmail.mutationOptions());
+  const updateCompensation = useMutation(
+    orpc.staff.updateCompensation.mutationOptions(),
+  );
 
   const form = useForm({
     defaultValues: {
@@ -128,6 +133,42 @@ export function StaffListView() {
   });
 
   const users = (data?.users ?? []) as StaffUser[];
+
+  const displayedRates = useMemo(() => {
+    const mapped: Record<string, string> = {};
+    for (const user of users) {
+      mapped[user.id] =
+        rateInputs[user.id] ??
+        String(Number.isFinite(user.hourlyRate) ? user.hourlyRate : 0);
+    }
+    return mapped;
+  }, [users, rateInputs]);
+
+  const handleSaveRate = async (userId: string) => {
+    const raw = displayedRates[userId] ?? "0";
+    const parsed = Number.parseInt(raw, 10);
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      toast.error("Hourly rate must be a non-negative integer (paise)");
+      return;
+    }
+
+    await updateCompensation.mutateAsync(
+      { userId, hourlyRate: parsed },
+      {
+        onSuccess: async () => {
+          await queryClient.invalidateQueries({
+            queryKey: orpc.staff.list.queryOptions({
+              input: { role: filterRole === "all" ? undefined : filterRole },
+            }).queryKey,
+          });
+          toast.success("Hourly rate updated");
+        },
+        onError: (error) =>
+          toast.error(error.message || "Failed to update hourly rate"),
+      },
+    );
+  };
 
   return (
     <div className="space-y-8">
@@ -176,13 +217,47 @@ export function StaffListView() {
           description="No users match the current filter."
         />
       ) : (
-        <DataTable
-          columns={columns}
-          data={users}
-          searchKey="name"
-          searchPlaceholder="Search staff..."
-          isLoading={isLoading}
-        />
+        <div className="space-y-4">
+          <DataTable
+            columns={columns}
+            data={users}
+            searchKey="name"
+            searchPlaceholder="Search staff..."
+            isLoading={isLoading}
+          />
+
+          <div className="rounded-xl border border-border/60 p-4">
+            <p className="mb-3 text-sm font-medium">Compensation Controls (paise/hour)</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              {users.map((user) => (
+                <div key={user.id} className="rounded-lg border border-border/60 p-3">
+                  <p className="text-sm font-medium">{user.name}</p>
+                  <p className="text-xs text-muted-foreground">{user.role ?? "staff"}</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={displayedRates[user.id] ?? "0"}
+                      onChange={(event) =>
+                        setRateInputs((current) => ({
+                          ...current,
+                          [user.id]: event.target.value,
+                        }))
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      onClick={() => handleSaveRate(user.id)}
+                      disabled={updateCompensation.isPending}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

@@ -1,6 +1,9 @@
 import { z } from "zod";
-import { db, eq, and, sql } from "@se-project/db";
+import { ORPCError } from "@orpc/server";
+import { db, eq, and, sql, inArray } from "@se-project/db";
 import { attendance } from "@se-project/db/schema/staff";
+import { event } from "@se-project/db/schema/events";
+import { member, user } from "@se-project/db/schema/auth";
 import {
   protectedProcedure,
   eventHeadProcedure,
@@ -11,6 +14,7 @@ import {
   attendanceWithUserSchema,
   attendanceWithEventSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 export const attendanceRouter = {
   record: eventHeadProcedure
@@ -32,6 +36,25 @@ export const attendanceRouter = {
     .output(attendanceSchema)
     .handler(async ({ input, context }) => {
       const markedBy = context.session.user.id;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
+      if (!scopedUserIds.includes(input.userId)) {
+        throw new ORPCError("FORBIDDEN", {
+          message: "Cannot record attendance for user outside your organization",
+        });
+      }
+
+      const eventRecord = await db.query.event.findFirst({
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
+      });
+
+      if (!eventRecord) {
+        throw new ORPCError("NOT_FOUND", { message: "Event not found" });
+      }
 
       // Check if a record already exists for this event+user+date
       const existing = await db.query.attendance.findFirst({
@@ -80,7 +103,21 @@ export const attendanceRouter = {
     })
     .input(z.object({ eventId: z.uuid() }))
     .output(z.array(attendanceWithUserSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
+      const eventRecord = await db.query.event.findFirst({
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
+      });
+
+      if (!eventRecord) {
+        return [];
+      }
+
       const records = await db.query.attendance.findMany({
         where: eq(attendance.eventId, input.eventId),
         with: {
@@ -89,6 +126,100 @@ export const attendanceRouter = {
       });
 
       return records;
+    }),
+
+  getEventPayout: protectedProcedure
+    .route({
+      tags: ["Attendance"],
+      summary: "Get event salary payout summary",
+      description:
+        "Calculates salary payout for an event using attendance hours and each staff member's configured hourly rate.",
+    })
+    .input(z.object({ eventId: z.uuid() }))
+    .output(
+      z.object({
+        rows: z.array(
+          z.object({
+            userId: z.string(),
+            name: z.string(),
+            hourlyRate: z.number().int(),
+            totalHours: z.number(),
+            payout: z.number().int(),
+          }),
+        ),
+        totalHours: z.number(),
+        totalPayout: z.number().int(),
+      }),
+    )
+    .handler(async ({ input, context }) => {
+      const { organizationId, userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
+      const eventRecord = await db.query.event.findFirst({
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
+      });
+
+      if (!eventRecord) {
+        throw new ORPCError("NOT_FOUND", { message: "Event not found" });
+      }
+
+      const records = await db.query.attendance.findMany({
+        where: eq(attendance.eventId, input.eventId),
+      });
+
+      const rates = await db
+        .select({
+          userId: member.userId,
+          name: user.name,
+          hourlyRate: member.hourlyRate,
+        })
+        .from(member)
+        .innerJoin(user, eq(user.id, member.userId))
+        .where(
+          and(
+            eq(member.organizationId, organizationId),
+            inArray(member.userId, scopedUserIds),
+          ),
+        );
+
+      const groupedHours = new Map<string, number>();
+
+      for (const record of records) {
+        if (!record.present) {
+          continue;
+        }
+
+        const current = groupedHours.get(record.userId) ?? 0;
+        groupedHours.set(record.userId, current + (record.hoursWorked ?? 0));
+      }
+
+      const rows = rates
+        .filter((rate) => groupedHours.has(rate.userId))
+        .map((rate) => {
+          const totalHours = groupedHours.get(rate.userId) ?? 0;
+          const payout = totalHours * (rate.hourlyRate ?? 0);
+
+          return {
+            userId: rate.userId,
+            name: rate.name,
+            hourlyRate: rate.hourlyRate ?? 0,
+            totalHours,
+            payout,
+          };
+        })
+        .sort((a, b) => b.payout - a.payout);
+
+      const totalHours = rows.reduce((sum, row) => sum + row.totalHours, 0);
+      const totalPayout = rows.reduce((sum, row) => sum + row.payout, 0);
+
+      return {
+        rows,
+        totalHours,
+        totalPayout,
+      };
     }),
 
   getByStaff: staffProcedure
@@ -106,7 +237,14 @@ export const attendanceRouter = {
       }),
     )
     .output(z.array(attendanceWithEventSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
+      if (!scopedUserIds.includes(input.userId)) {
+        return [];
+      }
+
       const conditions = [eq(attendance.userId, input.userId)];
 
       if (input.startDate) {
@@ -128,6 +266,6 @@ export const attendanceRouter = {
         },
       });
 
-      return records;
+      return records.filter((record) => scopedUserIds.includes(record.event.createdBy));
     }),
 };

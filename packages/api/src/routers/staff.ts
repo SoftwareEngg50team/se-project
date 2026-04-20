@@ -16,6 +16,7 @@ const staffMemberSchema = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
   role: z.string().nullable(),
+  hourlyRate: z.number().int(),
 });
 
 export const staffRouter = {
@@ -131,6 +132,7 @@ export const staffRouter = {
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
             role: member.role,
+            hourlyRate: member.hourlyRate,
           })
           .from(user)
           .innerJoin(member, eq(user.id, member.userId))
@@ -227,6 +229,47 @@ export const staffRouter = {
       });
     }),
 
+  updateCompensation: eventHeadProcedure
+    .route({
+      tags: ["Staff"],
+      summary: "Update staff hourly rate",
+      description:
+        "Update a staff member's hourly pay rate in paise for the current organization.",
+    })
+    .input(
+      z.object({
+        userId: z.string(),
+        hourlyRate: z.number().int().min(0),
+      }),
+    )
+    .output(z.object({ success: z.literal(true) }))
+    .handler(async ({ input, context }) => {
+      const organizationId = await resolveOrganizationId(context);
+
+      const existing = await db.query.member.findFirst({
+        where: and(
+          eq(member.userId, input.userId),
+          eq(member.organizationId, organizationId),
+        ),
+      });
+
+      if (!existing) {
+        throw new ORPCError("NOT_FOUND", { message: "Staff member not found" });
+      }
+
+      await db
+        .update(member)
+        .set({ hourlyRate: input.hourlyRate })
+        .where(
+          and(
+            eq(member.userId, input.userId),
+            eq(member.organizationId, organizationId),
+          ),
+        );
+
+      return { success: true as const };
+    }),
+
   getById: protectedProcedure
     .route({
       tags: ["Staff"],
@@ -235,7 +278,7 @@ export const staffRouter = {
         "Fetch a staff member by ID, including their organisation role.",
     })
     .input(z.object({ id: z.string() }))
-    .output(userSchema.extend({ role: z.string().nullable() }))
+    .output(userSchema.extend({ role: z.string().nullable(), hourlyRate: z.number().int() }))
     .handler(async ({ input, context }) => {
       const organizationId = await resolveOrganizationId(context);
 
@@ -251,7 +294,8 @@ export const staffRouter = {
       }
 
       // Get the role from the first membership
-      const role = result.members?.find((m) => m.organizationId === organizationId)?.role ?? null;
+      const orgMembership = result.members?.find((m) => m.organizationId === organizationId);
+      const role = orgMembership?.role ?? null;
 
       if (!role) {
         throw new ORPCError("NOT_FOUND", { message: "User not found" });
@@ -260,6 +304,7 @@ export const staffRouter = {
       return {
         ...result,
         role,
+        hourlyRate: orgMembership?.hourlyRate ?? 0,
         members: undefined,
       };
     }),

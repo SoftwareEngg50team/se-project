@@ -1,0 +1,2 @@
+ALTER TABLE "member"
+ADD COLUMN IF NOT EXISTS "hourly_rate" integer NOT NULL DEFAULT 0;

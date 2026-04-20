@@ -380,6 +380,107 @@ export const equipmentRouter = {
       return created!;
     }),
 
+  getMonthlyUtilization: protectedProcedure
+    .route({
+      tags: ["Equipment"],
+      summary: "Get monthly equipment utilization",
+      description:
+        "Returns utilization metrics per month based on equipment assignments for scoped events.",
+    })
+    .input(
+      z.object({
+        months: z.number().int().min(1).max(24).default(6),
+      }),
+    )
+    .output(
+      z.array(
+        z.object({
+          monthKey: z.string(),
+          monthLabel: z.string(),
+          assignmentCount: z.number().int(),
+          uniqueEquipmentCount: z.number().int(),
+          utilizationRate: z.number(),
+        }),
+      ),
+    )
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const linkedEquipmentIds = await resolveScopedLinkedEquipmentIds(scopedUserIds);
+
+      const allEquipment = await db.query.equipmentItem.findMany({
+        where: or(
+          inArray(equipmentItem.createdBy, scopedUserIds),
+          linkedEquipmentIds.length > 0
+            ? inArray(equipmentItem.id, linkedEquipmentIds)
+            : undefined,
+        ),
+      });
+
+      const totalEquipment = allEquipment.length;
+      const end = new Date();
+      const start = new Date(end.getFullYear(), end.getMonth() - (input.months - 1), 1);
+
+      const assignments = await db.query.equipmentAssignment.findMany({
+        with: {
+          event: true,
+        },
+      });
+
+      const scopedAssignments = assignments.filter(
+        (assignment) =>
+          scopedUserIds.includes(assignment.event.createdBy) &&
+          assignment.event.startDate >= start,
+      );
+
+      const monthBuckets = new Map<
+        string,
+        { monthLabel: string; assignmentCount: number; equipmentSet: Set<string> }
+      >();
+
+      for (let i = 0; i < input.months; i += 1) {
+        const monthDate = new Date(start.getFullYear(), start.getMonth() + i, 1);
+        const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}`;
+        const monthLabel = monthDate.toLocaleDateString("en-IN", {
+          month: "short",
+          year: "numeric",
+        });
+
+        monthBuckets.set(monthKey, {
+          monthLabel,
+          assignmentCount: 0,
+          equipmentSet: new Set<string>(),
+        });
+      }
+
+      for (const assignment of scopedAssignments) {
+        const date = new Date(assignment.event.startDate);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        const bucket = monthBuckets.get(monthKey);
+
+        if (!bucket) {
+          continue;
+        }
+
+        bucket.assignmentCount += 1;
+        bucket.equipmentSet.add(assignment.equipmentId);
+      }
+
+      return Array.from(monthBuckets.entries()).map(([monthKey, bucket]) => {
+        const uniqueEquipmentCount = bucket.equipmentSet.size;
+        const utilizationRate =
+          totalEquipment <= 0 ? 0 : Number(((uniqueEquipmentCount / totalEquipment) * 100).toFixed(2));
+
+        return {
+          monthKey,
+          monthLabel: bucket.monthLabel,
+          assignmentCount: bucket.assignmentCount,
+          uniqueEquipmentCount,
+          utilizationRate,
+        };
+      });
+    }),
+
   getAvailableByDateRange: protectedProcedure
     .route({
       tags: ["Equipment"],
