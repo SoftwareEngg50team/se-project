@@ -29,8 +29,14 @@ type AssistantCommand = {
 };
 
 type ParsedAssistantResponse = {
-  command: AssistantCommand;
-  speechText: string;
+  action: "CREATE_EVENT" | "ADD_VENDOR" | "RECORD_PAYMENT" | "CREATE_INVOICE" | "UNKNOWN";
+  is_complete: boolean;
+  payload: Record<string, unknown>;
+  missing_fields: string[];
+  reply_to_user: string;
+  command?: AssistantCommand | null;
+  model?: string;
+  warning?: string;
 };
 
 const promptExamples = [
@@ -82,6 +88,28 @@ function inferExecutionSummary(command: AssistantCommand): string {
   return `${command.action}: ${JSON.stringify(command.data, null, 2)}`;
 }
 
+function convertPlanToCommand(response: ParsedAssistantResponse): AssistantCommand | null {
+  if (response.command?.action) return response.command;
+
+  if (response.action === "CREATE_EVENT") {
+    return { action: "create_event", data: response.payload };
+  }
+
+  if (response.action === "ADD_VENDOR") {
+    return { action: "add_vendor", data: response.payload };
+  }
+
+  if (response.action === "RECORD_PAYMENT") {
+    return { action: "record_payment", data: response.payload };
+  }
+
+  if (response.action === "CREATE_INVOICE") {
+    return { action: "create_invoice", data: response.payload };
+  }
+
+  return null;
+}
+
 export function AssistantView() {
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
@@ -96,6 +124,7 @@ export function AssistantView() {
     },
   ]);
   const [parsedCommand, setParsedCommand] = useState<AssistantCommand | null>(null);
+  const [parsedPlan, setParsedPlan] = useState<ParsedAssistantResponse | null>(null);
   const [pendingText, setPendingText] = useState("");
   const [processing, setProcessing] = useState(false);
   const [history, setHistory] = useState<Array<{ id: string; speechText: string; action: string }>>([]);
@@ -236,13 +265,28 @@ export function AssistantView() {
 
     try {
       const response = await parseAssistantCommand(text);
-      const normalized = normalizeCommandData(response.command);
-      setParsedCommand(normalized);
-      setPendingText(text);
-      appendAssistantMessage("I interpreted your command. Please confirm before execution.", {
-        intent: normalized.action,
-        success: true,
+      setParsedPlan(response);
+
+      const command = convertPlanToCommand(response);
+      if (command && response.is_complete) {
+        const normalized = normalizeCommandData(command);
+        setParsedCommand(normalized);
+        setPendingText(text);
+      } else {
+        setParsedCommand(null);
+      }
+
+      appendAssistantMessage(response.reply_to_user, {
+        intent: response.action,
+        success: response.is_complete,
       });
+
+      if (response.warning) {
+        appendAssistantMessage(`Note: ${response.warning}`, {
+          intent: "warning",
+          success: false,
+        });
+      }
     } catch (error) {
       appendAssistantMessage(error instanceof Error ? error.message : "Failed to interpret your request", {
         intent: "parse_error",
@@ -260,6 +304,7 @@ export function AssistantView() {
 
   const handleCancel = () => {
     setParsedCommand(null);
+    setParsedPlan(null);
     setPendingText("");
     appendAssistantMessage("Cancelled. You can try another command.", {
       intent: "cancelled",
@@ -376,20 +421,25 @@ export function AssistantView() {
               <CardTitle className="text-base">AI Interpreted Command</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {parsedCommand ? (
+              {parsedPlan || parsedCommand ? (
                 <>
                   <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm">
                     <div className="flex items-center justify-between gap-3">
-                      <Badge>{parsedCommand.action}</Badge>
-                      <span className="text-xs text-muted-foreground">Awaiting confirmation</span>
+                      <Badge>{parsedPlan?.action ?? parsedCommand?.action ?? "UNKNOWN"}</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {parsedPlan?.is_complete ? "Awaiting confirmation" : "Needs more details"}
+                      </span>
                     </div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6">
-{JSON.stringify(parsedCommand.data, null, 2)}
+                    <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word text-xs leading-6">
+{JSON.stringify(parsedPlan?.payload ?? parsedCommand?.data ?? {}, null, 2)}
                     </pre>
+                    {parsedPlan && parsedPlan.missing_fields.length > 0 && (
+                      <p className="text-xs text-amber-600">Missing: {parsedPlan.missing_fields.join(", ")}</p>
+                    )}
                   </div>
 
                   <div className="flex gap-2">
-                    <Button onClick={handleConfirm} disabled={processing} className="flex-1">
+                    <Button onClick={handleConfirm} disabled={processing || !parsedPlan?.is_complete} className="flex-1">
                       <CheckCheck className="mr-2 size-4" />
                       {processing ? "Executing..." : "Confirm"}
                     </Button>
