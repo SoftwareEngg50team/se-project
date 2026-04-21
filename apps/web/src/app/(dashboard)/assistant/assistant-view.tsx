@@ -88,6 +88,10 @@ function inferExecutionSummary(command: AssistantCommand): string {
   return `${command.action}: ${JSON.stringify(command.data, null, 2)}`;
 }
 
+function isValidUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function convertPlanToCommand(response: ParsedAssistantResponse): AssistantCommand | null {
   if (response.command?.action) return response.command;
 
@@ -181,6 +185,23 @@ export function AssistantView() {
     return { action: command.action, data };
   };
 
+  const resolveFallbackEventId = async (): Promise<string> => {
+    const result = await orpc.events.list.call({ page: 1, limit: 1 });
+    const existing = result.events[0];
+    if (existing?.id) return existing.id;
+
+    const now = new Date();
+    const created = await createEvent.mutateAsync({
+      name: "Auto Event",
+      startDate: now,
+      endDate: new Date(now.getTime() + 2 * 60 * 60 * 1000),
+      location: "Delhi",
+      clientName: "Walk-in Client",
+      notes: "Auto-created by assistant for payment/invoice action",
+    });
+    return created.id;
+  };
+
   const executeCommand = async (command: AssistantCommand) => {
     setProcessing(true);
     try {
@@ -210,9 +231,13 @@ export function AssistantView() {
       }
 
       if (command.action === "record_payment") {
+        const resolvedEventId = command.data.eventId && typeof command.data.eventId === "string" && isValidUuid(command.data.eventId)
+          ? command.data.eventId
+          : await resolveFallbackEventId();
+
         const payload = {
-          eventId: String(command.data.eventId ?? command.data.event ?? ""),
-          amount: Number(command.data.amount ?? 0),
+          eventId: String(resolvedEventId),
+          amount: Math.max(1, Number(command.data.amount ?? 1000)),
           paymentDate: new Date(String(command.data.paymentDate ?? new Date().toISOString())),
           paymentMethod: command.data.paymentMethod ? String(command.data.paymentMethod) : undefined,
           type: (String(command.data.type ?? "customer_payment") as "customer_advance" | "customer_payment" | "vendor_payment"),
@@ -224,9 +249,12 @@ export function AssistantView() {
       }
 
       if (command.action === "create_invoice") {
-        const amount = Number(command.data.amount ?? 0);
+        const resolvedEventId = command.data.eventId && typeof command.data.eventId === "string" && isValidUuid(command.data.eventId)
+          ? command.data.eventId
+          : await resolveFallbackEventId();
+        const amount = Math.max(1, Number(command.data.amount ?? 5000));
         const payload = {
-          eventId: String(command.data.eventId ?? command.data.event ?? ""),
+          eventId: String(resolvedEventId),
           amount,
           dueDate: new Date(String(command.data.dueDate ?? parseDateKeyword("kal"))),
         };
@@ -255,12 +283,14 @@ export function AssistantView() {
     }
   };
 
-  const onSubmit = async () => {
-    const text = input.trim();
+  const onSubmit = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || processing) return;
 
     appendUserMessage(text);
-    setInput("");
+    if (!overrideText) {
+      setInput("");
+    }
     setProcessing(true);
 
     try {
@@ -268,7 +298,7 @@ export function AssistantView() {
       setParsedPlan(response);
 
       const command = convertPlanToCommand(response);
-      if (command && response.is_complete) {
+      if (command) {
         const normalized = normalizeCommandData(command);
         setParsedCommand(normalized);
         setPendingText(text);
@@ -363,7 +393,7 @@ export function AssistantView() {
                   type="button"
                   variant="outline"
                   className="h-auto justify-start whitespace-normal text-left text-xs"
-                  onClick={() => setInput(example)}
+                  onClick={() => void onSubmit(example)}
                 >
                   {example}
                 </Button>
@@ -439,7 +469,7 @@ export function AssistantView() {
                   </div>
 
                   <div className="flex gap-2">
-                    <Button onClick={handleConfirm} disabled={processing || !parsedPlan?.is_complete} className="flex-1">
+                    <Button onClick={handleConfirm} disabled={processing || !parsedCommand} className="flex-1">
                       <CheckCheck className="mr-2 size-4" />
                       {processing ? "Executing..." : "Confirm"}
                     </Button>

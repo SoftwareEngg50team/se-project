@@ -194,13 +194,15 @@ function parseRuleBasedPlan(input: string, now: Date): AssistantPlan {
   }
 
   if (normalized.includes("event") || normalized.includes("function") || normalized.includes("program")) {
-    const locationMatch = input.match(/(?:in|at|mein|me)\s+([a-zA-Z\s.-]+)/i);
+    const locationBeforeMe = input.match(/([a-zA-Z\s.-]+?)\s+(?:mein|me)\b/i);
+    const locationAfterIn = input.match(/(?:in|at)\s+([a-zA-Z\s.-]+?)(?:\s+(?:for|ke\s+liye|client)\b|$)/i);
     const clientMatch = input.match(/(?:for|client|ke liye)\s+([a-zA-Z\s.-]+)/i);
     const parsedDate = parseNaturalDate(normalized, now);
+    const location = locationBeforeMe?.[1]?.trim() || locationAfterIn?.[1]?.trim();
 
     return finalizePlan("CREATE_EVENT", {
       name: "Voice Created Event",
-      location: locationMatch?.[1]?.trim(),
+      location,
       clientName: clientMatch?.[1]?.trim(),
       startDate: parsedDate,
       endDate: parsedDate,
