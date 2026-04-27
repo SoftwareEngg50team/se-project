@@ -39,6 +39,7 @@
     "db:generate": "bun run --filter @se-project/db db:generate",
     "db:migrate": "bun run --filter @se-project/db db:migrate",
     "db:seed:realistic": "node scripts/seed-realistic-data.cjs",
+    "db:seed:bulk": "node scripts/seed-bulk-realistic-data.cjs",
     "db:start": "bun run --filter @se-project/db db:start",
     "db:watch": "bun run --filter @se-project/db db:watch",
     "db:stop": "bun run --filter @se-project/db db:stop",

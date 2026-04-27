@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq, and, desc, count, sql } from "@se-project/db";
+import { db, eq, and, desc, count, sql, inArray } from "@se-project/db";
 import { expense, vendor } from "@se-project/db/schema/finance";
+import { event } from "@se-project/db/schema/events";
 import { protectedProcedure, eventHeadProcedure } from "../index";
 import {
   expenseSchema,
   expenseWithVendorSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 export const expensesRouter = {
   create: eventHeadProcedure
@@ -34,6 +36,19 @@ export const expensesRouter = {
     .output(expenseSchema)
     .handler(async ({ input, context }) => {
       const userId = context.session.user.id;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (!scopedEventIds.includes(input.eventId)) {
+        throw new ORPCError("FORBIDDEN", {
+          message: "You do not have access to this event",
+        });
+      }
 
       if (input.vendorId) {
         const vendorExists = await db.query.vendor.findFirst({
@@ -79,9 +94,23 @@ export const expensesRouter = {
       }),
     )
     .output(z.object({ expenses: z.array(expenseWithVendorSchema), total: z.number().int() }))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { eventId, category, page, limit } = input;
       const offset = (page - 1) * limit;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (!scopedEventIds.includes(eventId)) {
+        return {
+          expenses: [],
+          total: 0,
+        };
+      }
 
       const conditions = [eq(expense.eventId, eventId)];
 
@@ -138,11 +167,21 @@ export const expensesRouter = {
       }),
     )
     .output(expenseSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { id, ...data } = input;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
 
       const existing = await db.query.expense.findFirst({
-        where: eq(expense.id, id),
+        where: and(
+          eq(expense.id, id),
+          inArray(expense.eventId, scopedEventIds),
+        ),
       });
 
       if (!existing) {
@@ -161,7 +200,12 @@ export const expensesRouter = {
       const [updated] = await db
         .update(expense)
         .set(data)
-        .where(eq(expense.id, id))
+        .where(
+          and(
+            eq(expense.id, id),
+            inArray(expense.eventId, scopedEventIds),
+          ),
+        )
         .returning();
 
       return updated!;
@@ -175,16 +219,34 @@ export const expensesRouter = {
     })
     .input(z.object({ id: z.uuid() }))
     .output(z.object({ success: z.literal(true) }))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
       const existing = await db.query.expense.findFirst({
-        where: eq(expense.id, input.id),
+        where: and(
+          eq(expense.id, input.id),
+          inArray(expense.eventId, scopedEventIds),
+        ),
       });
 
       if (!existing) {
         throw new ORPCError("NOT_FOUND", { message: "Expense not found" });
       }
 
-      await db.delete(expense).where(eq(expense.id, input.id));
+      await db
+        .delete(expense)
+        .where(
+          and(
+            eq(expense.id, input.id),
+            inArray(expense.eventId, scopedEventIds),
+          ),
+        );
 
       return { success: true };
     }),
@@ -214,7 +276,22 @@ export const expensesRouter = {
         ),
       }),
     )
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (!scopedEventIds.includes(input.eventId)) {
+        return {
+          total: 0,
+          byCategory: [],
+        };
+      }
+
       const [totalResult] = await db
         .select({
           total: sql<number>`coalesce(sum(${expense.amount}), 0)`,

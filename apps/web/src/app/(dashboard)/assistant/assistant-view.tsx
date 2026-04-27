@@ -29,12 +29,25 @@ type AssistantCommand = {
 };
 
 type ParsedAssistantResponse = {
-  action: "CREATE_EVENT" | "ADD_VENDOR" | "RECORD_PAYMENT" | "CREATE_INVOICE" | "UNKNOWN";
-  is_complete: boolean;
-  payload: Record<string, unknown>;
-  missing_fields: string[];
-  reply_to_user: string;
+  mode?: "command" | "question";
+  metric?: string;
+  answer?: string;
+  rawData?: Record<string, unknown>;
+  plans?: Array<{
+    action: "CREATE_EVENT" | "ADD_VENDOR" | "RECORD_PAYMENT" | "CREATE_INVOICE" | "UNKNOWN";
+    is_complete: boolean;
+    payload: Record<string, unknown>;
+    missing_fields: string[];
+    reply_to_user: string;
+  }>;
+  summary_reply?: string;
+  action?: "CREATE_EVENT" | "ADD_VENDOR" | "RECORD_PAYMENT" | "CREATE_INVOICE" | "UNKNOWN";
+  is_complete?: boolean;
+  payload?: Record<string, unknown>;
+  missing_fields?: string[];
+  reply_to_user?: string;
   command?: AssistantCommand | null;
+  commands?: AssistantCommand[];
   model?: string;
   warning?: string;
 };
@@ -94,24 +107,53 @@ function isValidUuid(value: string): boolean {
 
 function convertPlanToCommand(response: ParsedAssistantResponse): AssistantCommand | null {
   if (response.command?.action) return response.command;
+  if (!response.action) return null;
 
   if (response.action === "CREATE_EVENT") {
-    return { action: "create_event", data: response.payload };
+    return { action: "create_event", data: response.payload ?? {} };
   }
 
   if (response.action === "ADD_VENDOR") {
-    return { action: "add_vendor", data: response.payload };
+    return { action: "add_vendor", data: response.payload ?? {} };
   }
 
   if (response.action === "RECORD_PAYMENT") {
-    return { action: "record_payment", data: response.payload };
+    return { action: "record_payment", data: response.payload ?? {} };
   }
 
   if (response.action === "CREATE_INVOICE") {
-    return { action: "create_invoice", data: response.payload };
+    return { action: "create_invoice", data: response.payload ?? {} };
   }
 
   return null;
+}
+
+function convertPlansToCommands(response: ParsedAssistantResponse): AssistantCommand[] {
+  if (Array.isArray(response.commands) && response.commands.length > 0) {
+    return response.commands;
+  }
+
+  if (Array.isArray(response.plans) && response.plans.length > 0) {
+    return response.plans
+      .map((plan) => {
+        const singlePlanResponse: ParsedAssistantResponse = {
+          ...response,
+          action: plan.action,
+          is_complete: plan.is_complete,
+          payload: plan.payload,
+          missing_fields: plan.missing_fields,
+          reply_to_user: plan.reply_to_user,
+          plans: undefined,
+          commands: undefined,
+        };
+
+        return convertPlanToCommand(singlePlanResponse);
+      })
+      .filter((command): command is AssistantCommand => Boolean(command));
+  }
+
+  const single = convertPlanToCommand(response);
+  return single ? [single] : [];
 }
 
 export function AssistantView() {
@@ -127,8 +169,9 @@ export function AssistantView() {
       success: true,
     },
   ]);
-  const [parsedCommand, setParsedCommand] = useState<AssistantCommand | null>(null);
+  const [parsedCommands, setParsedCommands] = useState<AssistantCommand[]>([]);
   const [parsedPlan, setParsedPlan] = useState<ParsedAssistantResponse | null>(null);
+  const [ragRawData, setRagRawData] = useState<Record<string, unknown> | null>(null);
   const [pendingText, setPendingText] = useState("");
   const [processing, setProcessing] = useState(false);
   const [history, setHistory] = useState<Array<{ id: string; speechText: string; action: string }>>([]);
@@ -202,8 +245,7 @@ export function AssistantView() {
     return created.id;
   };
 
-  const executeCommand = async (command: AssistantCommand) => {
-    setProcessing(true);
+  const executeSingleCommand = async (command: AssistantCommand) => {
     try {
       if (command.action === "create_event") {
         const payload = {
@@ -261,7 +303,6 @@ export function AssistantView() {
         await createInvoice.mutateAsync(payload);
       }
 
-      await queryClient.invalidateQueries();
       appendAssistantMessage("Command executed successfully.", {
         intent: command.action,
         success: true,
@@ -270,16 +311,12 @@ export function AssistantView() {
         { id: crypto.randomUUID(), speechText: pendingText || input, action: command.action },
         ...current,
       ]);
-      setParsedCommand(null);
-      setPendingText("");
     } catch (error) {
       appendAssistantMessage(error instanceof Error ? error.message : "Failed to execute command", {
         intent: command.action,
         success: false,
       });
       toast.error(error instanceof Error ? error.message : "Failed to execute command");
-    } finally {
-      setProcessing(false);
     }
   };
 
@@ -295,21 +332,50 @@ export function AssistantView() {
 
     try {
       const response = await parseAssistantCommand(text);
-      setParsedPlan(response);
+      const isQuestionMode = response.mode === "question" || typeof response.answer === "string";
 
-      const command = convertPlanToCommand(response);
-      if (command) {
-        const normalized = normalizeCommandData(command);
-        setParsedCommand(normalized);
-        setPendingText(text);
+      if (isQuestionMode) {
+        setParsedPlan(null);
+        setParsedCommands([]);
+        setPendingText("");
+        setRagRawData(response.rawData ?? null);
+
+        appendAssistantMessage(
+          response.answer
+          ?? response.summary_reply
+          ?? response.reply_to_user
+          ?? "I could not generate an answer for this query.",
+          {
+            intent: response.metric ?? "rag_query",
+            success: true,
+          },
+        );
+
+        setHistory((current) => [
+          {
+            id: crypto.randomUUID(),
+            speechText: text,
+            action: `question:${response.metric ?? "general"}`,
+          },
+          ...current,
+        ]);
       } else {
-        setParsedCommand(null);
-      }
+        setParsedPlan(response);
+        setRagRawData(null);
 
-      appendAssistantMessage(response.reply_to_user, {
-        intent: response.action,
-        success: response.is_complete,
-      });
+        const commands = convertPlansToCommands(response).map(normalizeCommandData);
+        if (commands.length > 0) {
+          setParsedCommands(commands);
+          setPendingText(text);
+        } else {
+          setParsedCommands([]);
+        }
+
+        appendAssistantMessage(response.summary_reply ?? response.reply_to_user ?? "", {
+          intent: response.action,
+          success: response.is_complete,
+        });
+      }
 
       if (response.warning) {
         appendAssistantMessage(`Note: ${response.warning}`, {
@@ -328,13 +394,34 @@ export function AssistantView() {
   };
 
   const handleConfirm = async () => {
-    if (!parsedCommand) return;
-    await executeCommand(parsedCommand);
+    if (parsedCommands.length === 0) return;
+
+    setProcessing(true);
+    let completed = 0;
+
+    try {
+      for (const command of parsedCommands) {
+        await executeSingleCommand(command);
+        completed += 1;
+      }
+
+      await queryClient.invalidateQueries();
+      appendAssistantMessage(`Batch execution finished. ${completed}/${parsedCommands.length} actions processed.`, {
+        intent: "batch_execution",
+        success: completed > 0,
+      });
+    } finally {
+      setParsedCommands([]);
+      setParsedPlan(null);
+      setPendingText("");
+      setProcessing(false);
+    }
   };
 
   const handleCancel = () => {
-    setParsedCommand(null);
+    setParsedCommands([]);
     setParsedPlan(null);
+    setRagRawData(null);
     setPendingText("");
     appendAssistantMessage("Cancelled. You can try another command.", {
       intent: "cancelled",
@@ -448,39 +535,71 @@ export function AssistantView() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">AI Interpreted Command</CardTitle>
+              <CardTitle className="text-base">AI Interpreted Output</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {parsedPlan || parsedCommand ? (
+              {parsedPlan || parsedCommands.length > 0 || ragRawData ? (
                 <>
-                  <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <Badge>{parsedPlan?.action ?? parsedCommand?.action ?? "UNKNOWN"}</Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {parsedPlan?.is_complete ? "Awaiting confirmation" : "Needs more details"}
-                      </span>
+                  {ragRawData && parsedCommands.length === 0 && !parsedPlan ? (
+                    <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <Badge>RAG Raw Data Preview</Badge>
+                        <span className="text-xs text-muted-foreground">SQL retrieval result</span>
+                      </div>
+                      <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word text-xs leading-6">
+{JSON.stringify(ragRawData, null, 2)}
+                      </pre>
                     </div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word text-xs leading-6">
-{JSON.stringify(parsedPlan?.payload ?? parsedCommand?.data ?? {}, null, 2)}
-                    </pre>
-                    {parsedPlan && parsedPlan.missing_fields.length > 0 && (
-                      <p className="text-xs text-amber-600">Missing: {parsedPlan.missing_fields.join(", ")}</p>
-                    )}
-                  </div>
+                  ) : (
+                    <>
+                      <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <Badge>{parsedPlan?.plans?.length ? `${parsedPlan.plans.length} actions` : parsedPlan?.action ?? "UNKNOWN"}</Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {parsedPlan?.is_complete ? "Awaiting confirmation" : "Needs more details"}
+                          </span>
+                        </div>
+                        {parsedPlan?.plans?.length ? (
+                          <div className="space-y-2">
+                            {parsedPlan.plans.map((plan, index) => (
+                              <div key={`${plan.action}-${index}`} className="rounded-lg border border-border/50 bg-background/50 p-2">
+                                <p className="text-xs font-medium">{index + 1}. {plan.action}</p>
+                                <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word text-xs leading-6">
+{JSON.stringify(plan.payload, null, 2)}
+                                </pre>
+                                {plan.missing_fields.length > 0 && (
+                                  <p className="text-xs text-amber-600">Missing: {plan.missing_fields.join(", ")}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <>
+                            <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word text-xs leading-6">
+{JSON.stringify(parsedPlan?.payload ?? {}, null, 2)}
+                            </pre>
+                            {parsedPlan && (parsedPlan.missing_fields?.length ?? 0) > 0 && (
+                              <p className="text-xs text-amber-600">Missing: {(parsedPlan.missing_fields ?? []).join(", ")}</p>
+                            )}
+                          </>
+                        )}
+                      </div>
 
-                  <div className="flex gap-2">
-                    <Button onClick={handleConfirm} disabled={processing || !parsedCommand} className="flex-1">
-                      <CheckCheck className="mr-2 size-4" />
-                      {processing ? "Executing..." : "Confirm"}
-                    </Button>
-                    <Button variant="outline" onClick={handleCancel} className="flex-1">
-                      <X className="mr-2 size-4" />
-                      Cancel
-                    </Button>
-                  </div>
+                      <div className="flex gap-2">
+                        <Button onClick={handleConfirm} disabled={processing || parsedCommands.length === 0} className="flex-1">
+                          <CheckCheck className="mr-2 size-4" />
+                          {processing ? "Executing..." : parsedCommands.length > 1 ? `Confirm All (${parsedCommands.length})` : "Confirm"}
+                        </Button>
+                        <Button variant="outline" onClick={handleCancel} className="flex-1">
+                          <X className="mr-2 size-4" />
+                          Cancel
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </>
               ) : (
-                <p className="text-sm text-muted-foreground">No pending command. Speak or type a request to preview the structured action.</p>
+                <p className="text-sm text-muted-foreground">No pending output. Ask a business question or command to preview result.</p>
               )}
             </CardContent>
           </Card>
@@ -514,6 +633,7 @@ export function AssistantView() {
               <p>Create invoice</p>
             </CardContent>
           </Card>
+
         </div>
       </div>
     </div>

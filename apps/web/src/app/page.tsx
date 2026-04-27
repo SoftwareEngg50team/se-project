@@ -62,6 +62,57 @@ const carouselSlides = [
   },
 ];
 
+const appFaqs: Array<{ question: string; answer: string }> = [
+  {
+    question: "What is EventFlow used for?",
+    answer: "EventFlow helps teams manage events end-to-end, including staff, equipment, vendors, invoices, and payments.",
+  },
+  {
+    question: "Who should use this app?",
+    answer: "It is designed for event operations teams, event heads, and business owners who need clear operational tracking.",
+  },
+  {
+    question: "Can multiple team members work together?",
+    answer: "Yes. The app supports role-based access so different users can collaborate with controlled permissions.",
+  },
+  {
+    question: "Does it support event planning and execution both?",
+    answer: "Yes. You can plan schedules, assign resources, and track execution progress from one workflow.",
+  },
+  {
+    question: "How are invoices and payments handled?",
+    answer: "You can generate invoices, monitor due status, and record payments against events from the finance modules.",
+  },
+  {
+    question: "Can I track equipment availability?",
+    answer: "Yes. Equipment inventory, assignments, and availability checks are supported to reduce booking conflicts.",
+  },
+  {
+    question: "Does EventFlow support vendors?",
+    answer: "Yes. You can add and manage vendor records for services used across events.",
+  },
+  {
+    question: "Is there an AI assistant in the app?",
+    answer: "Yes. The assistant can interpret natural-language requests and prepare actions for your confirmation.",
+  },
+  {
+    question: "Can the assistant process long multi-task queries?",
+    answer: "Yes. It can split long requests into ordered actions and execute them step-by-step after confirmation.",
+  },
+  {
+    question: "Is organization data isolated?",
+    answer: "Yes. Data is scoped by organization and protected by authentication and role permissions.",
+  },
+  {
+    question: "Where can I see business performance quickly?",
+    answer: "Use dashboard and reports to view revenue, pending invoices, and operational activity at a glance.",
+  },
+  {
+    question: "How do I get started quickly?",
+    answer: "Sign in, create your first event, then add vendors, assign resources, and track invoice/payment flow.",
+  },
+];
+
 function useCountUp(target: number, duration = 1400) {
   const [value, setValue] = useState(0);
 
@@ -306,6 +357,26 @@ export default function Home() {
                   index === activeSlide ? "w-8 bg-primary" : "w-2.5 bg-muted-foreground/40 hover:bg-muted-foreground/60"
                 }`}
               />
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-border/70 bg-card/65 p-5 backdrop-blur md:p-7">
+          <div className="mb-4">
+            <p className="inline-flex items-center gap-2 text-xs font-medium text-primary">
+              <Sparkles className="size-3.5" />
+              FAQs
+            </p>
+            <h2 className="mt-1 text-xl font-bold tracking-tight md:text-2xl">Frequently Asked Questions</h2>
+            <p className="mt-1 text-sm text-muted-foreground">General answers about how EventFlow works across the whole app.</p>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            {appFaqs.map((item) => (
+              <details key={item.question} className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 text-sm">
+                <summary className="cursor-pointer font-medium text-foreground">{item.question}</summary>
+                <p className="mt-2 text-muted-foreground">{item.answer}</p>
+              </details>
             ))}
           </div>
         </section>

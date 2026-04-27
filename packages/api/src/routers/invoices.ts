@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
-import { db, eq, and, desc, count, sql } from "@se-project/db";
+import { db, eq, and, desc, count, sql, inArray } from "@se-project/db";
 import { event } from "@se-project/db/schema/events";
 import { invoice, invoiceLineItem } from "@se-project/db/schema/finance";
 import { protectedProcedure, eventHeadProcedure } from "../index";
@@ -9,6 +9,7 @@ import {
   invoiceWithRelationsSchema,
   invoiceDetailSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 const invoiceLineItemInputSchema = z.object({
   description: z.string().trim().min(1).max(200),
@@ -90,8 +91,13 @@ export const invoicesRouter = {
     .output(invoiceSchema)
     .handler(async ({ input, context }) => {
       const userId = context.session.user.id;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
       const eventRecord = await db.query.event.findFirst({
-        where: eq(event.id, input.eventId),
+        where: and(
+          eq(event.id, input.eventId),
+          inArray(event.createdBy, scopedUserIds),
+        ),
       });
 
       if (!eventRecord) {
@@ -156,11 +162,25 @@ export const invoicesRouter = {
         total: z.number().int(),
       }),
     )
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { eventId, status, overdueDays, page, limit } = input;
       const offset = (page - 1) * limit;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
 
-      const conditions = [];
+      if (scopedEventIds.length === 0) {
+        return {
+          invoices: [],
+          total: 0,
+        };
+      }
+
+      const conditions = [inArray(invoice.eventId, scopedEventIds)];
 
       if (eventId) {
         conditions.push(eq(invoice.eventId, eventId));
@@ -216,9 +236,24 @@ export const invoicesRouter = {
     })
     .input(z.object({ id: z.uuid() }))
     .output(invoiceDetailSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (scopedEventIds.length === 0) {
+        throw new ORPCError("NOT_FOUND", { message: "Invoice not found" });
+      }
+
       const result = await db.query.invoice.findFirst({
-        where: eq(invoice.id, input.id),
+        where: and(
+          eq(invoice.id, input.id),
+          inArray(invoice.eventId, scopedEventIds),
+        ),
         with: {
           event: true,
           lineItems: true,
@@ -253,11 +288,25 @@ export const invoicesRouter = {
       }),
     )
     .output(invoiceSchema)
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
       const { id, amount, lineItems, ...data } = input;
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (scopedEventIds.length === 0) {
+        throw new ORPCError("NOT_FOUND", { message: "Invoice not found" });
+      }
 
       const existing = await db.query.invoice.findFirst({
-        where: eq(invoice.id, id),
+        where: and(
+          eq(invoice.id, id),
+          inArray(invoice.eventId, scopedEventIds),
+        ),
         with: {
           event: true,
           lineItems: true,
@@ -297,7 +346,12 @@ export const invoicesRouter = {
                 ? { amount }
                 : {}),
           })
-          .where(eq(invoice.id, id))
+          .where(
+            and(
+              eq(invoice.id, id),
+              inArray(invoice.eventId, scopedEventIds),
+            ),
+          )
           .returning();
 
         if (nextLineItems) {
@@ -329,12 +383,25 @@ export const invoicesRouter = {
       }),
     )
     .output(z.array(invoiceWithRelationsSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (scopedEventIds.length === 0) {
+        return [];
+      }
+
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - input.days);
 
       const overdueInvoices = await db.query.invoice.findMany({
         where: and(
+          inArray(invoice.eventId, scopedEventIds),
           sql`${invoice.dueDate} < ${cutoffDate}`,
           sql`${invoice.status} != 'paid'`,
         ),

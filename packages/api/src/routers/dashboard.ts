@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { db, eq, desc, sql } from "@se-project/db";
+import { db, eq, desc, sql, and, inArray } from "@se-project/db";
 import { event } from "@se-project/db/schema/events";
 import { expense, invoice, payment } from "@se-project/db/schema/finance";
 import { protectedProcedure } from "../index";
@@ -7,6 +7,7 @@ import {
   eventSchema,
   paymentWithEventSchema,
 } from "../schemas";
+import { ensureScopedIds, resolveOrganizationUserIds } from "../tenant";
 
 export const dashboardRouter = {
   getFinancialSummary: protectedProcedure
@@ -25,7 +26,10 @@ export const dashboardRouter = {
         outstandingInvoices: z.number(),
       }),
     )
-    .handler(async () => {
+    .handler(async ({ context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const [
         revenueResult,
         expensesResult,
@@ -37,32 +41,51 @@ export const dashboardRouter = {
           .select({
             total: sql<number>`COALESCE(SUM(${event.totalRevenue}), 0)`,
           })
-          .from(event),
+          .from(event)
+          .where(inArray(event.createdBy, scopedUserIds)),
         db
           .select({
             total: sql<number>`COALESCE(SUM(${expense.amount}), 0)`,
           })
-          .from(expense),
+          .from(expense)
+          .innerJoin(event, eq(expense.eventId, event.id))
+          .where(inArray(event.createdBy, scopedUserIds)),
         db
           .select({
             total: sql<number>`COALESCE(SUM(${payment.amount}), 0)`,
           })
           .from(payment)
+          .innerJoin(event, eq(payment.eventId, event.id))
           .where(
-            sql`${payment.type} IN ('customer_advance', 'customer_payment')`,
+            and(
+              sql`${payment.type} IN ('customer_advance', 'customer_payment')`,
+              inArray(event.createdBy, scopedUserIds),
+            ),
           ),
         db
           .select({
             total: sql<number>`COALESCE(SUM(${payment.amount}), 0)`,
           })
           .from(payment)
-          .where(eq(payment.type, "vendor_payment")),
+          .innerJoin(event, eq(payment.eventId, event.id))
+          .where(
+            and(
+              eq(payment.type, "vendor_payment"),
+              inArray(event.createdBy, scopedUserIds),
+            ),
+          ),
         db
           .select({
             total: sql<number>`COALESCE(SUM(${invoice.amount}), 0)`,
           })
           .from(invoice)
-          .where(sql`${invoice.status} NOT IN ('paid', 'draft')`),
+          .innerJoin(event, eq(invoice.eventId, event.id))
+          .where(
+            and(
+              sql`${invoice.status} NOT IN ('paid', 'draft')`,
+              inArray(event.createdBy, scopedUserIds),
+            ),
+          ),
       ]);
 
       return {
@@ -86,9 +109,15 @@ export const dashboardRouter = {
       }),
     )
     .output(z.array(eventSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+
       const events = await db.query.event.findMany({
-        where: eq(event.status, "upcoming"),
+        where: and(
+          eq(event.status, "upcoming"),
+          inArray(event.createdBy, scopedUserIds),
+        ),
         orderBy: [event.startDate],
         limit: input.limit,
       });
@@ -109,8 +138,21 @@ export const dashboardRouter = {
       }),
     )
     .output(z.array(paymentWithEventSchema))
-    .handler(async ({ input }) => {
+    .handler(async ({ input, context }) => {
+      const { userIds } = await resolveOrganizationUserIds(context);
+      const scopedUserIds = ensureScopedIds(userIds);
+      const scopedEvents = await db
+        .select({ id: event.id })
+        .from(event)
+        .where(inArray(event.createdBy, scopedUserIds));
+      const scopedEventIds = scopedEvents.map((row) => row.id);
+
+      if (scopedEventIds.length === 0) {
+        return [];
+      }
+
       const payments = await db.query.payment.findMany({
+        where: inArray(payment.eventId, scopedEventIds),
         orderBy: desc(payment.paymentDate),
         limit: input.limit,
         with: {

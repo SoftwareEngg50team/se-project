@@ -17,6 +17,16 @@ import { authClient } from "@/lib/auth-client";
 
 import Loader from "./loader";
 
+function redirectToDashboard(router: ReturnType<typeof useRouter>) {
+  router.replace("/dashboard");
+  router.refresh();
+
+  // Fallback for cases where client-side navigation races with freshly-set auth cookies.
+  if (typeof window !== "undefined") {
+    window.location.assign("/dashboard");
+  }
+}
+
 export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () => void }) {
   const router = useRouter();
   const { isPending } = authClient.useSession();
@@ -36,7 +46,7 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
         },
         {
           onSuccess: () => {
-            router.push("/dashboard");
+            redirectToDashboard(router);
             toast.success("Sign up successful");
           },
           onError: (error) => {

@@ -1,0 +1,11 @@
+.env
+.env.*
+apps/web/.env
+apps/web/.env.*
+.next
+apps/web/.next
+node_modules
+se-project.git
+backend.zip
+tests
+.vscode
