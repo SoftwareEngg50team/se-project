@@ -2,6 +2,11 @@
 
 A platform to manage events, equipment inventory, staff assignments, invoices, and vendor payments for a sound & light rental business.
 
+## Links
+
+- GitHub repository: [https://github.com/SoftwareEngg50team/se-project](https://github.com/SoftwareEngg50team/se-project)
+- Live app: [https://se-project-main-fresh.vercel.app](https://se-project-main-fresh.vercel.app)
+
 ## Tech Stack
 
 - **Next.js 16** - Full-stack React framework
